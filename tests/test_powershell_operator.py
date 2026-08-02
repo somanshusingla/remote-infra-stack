@@ -583,11 +583,16 @@ class PowerShellOperatorTests(unittest.TestCase):
         def verify(shell: str):
             cases = (
                 (
-                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject); throw 'forced ACL-set failure' }",
+                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject); "
+                    "if ([IO.Path]::GetFileName([string]$LiteralPath) -clike 'deploy.*') { "
+                    "throw 'forced ACL-set failure' }; "
+                    "Microsoft.PowerShell.Security\\Set-Acl @PSBoundParameters }",
                     "could not establish a private staging ACL",
                 ),
                 (
-                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject) }",
+                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject); "
+                    "if ([IO.Path]::GetFileName([string]$LiteralPath) -clike 'deploy.*') { return }; "
+                    "Microsoft.PowerShell.Security\\Set-Acl @PSBoundParameters }",
                     "private staging ACL verification failed",
                 ),
             )
@@ -614,6 +619,121 @@ class PowerShellOperatorTests(unittest.TestCase):
                     self.assertFalse((root / ".artifacts").exists())
                     self.assertEqual(original_secret, (root / ".env").read_bytes())
                     self.assertEqual([], list(base.rglob("runtime-env-*")))
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_pins_verified_artifact_and_staging_directories_against_replacement(self):
+        def verify(shell: str):
+            attacks = (
+                (
+                    "rename-directory",
+                    """
+                    [System.IO.Directory]::Move($LiteralPath, $env:STACK_ATTACK_MOVED)
+                    [void][System.IO.Directory]::CreateDirectory($LiteralPath)
+                    [System.IO.File]::WriteAllText($env:STACK_ATTACK_MARKER, 'renamed')
+                    """,
+                ),
+                (
+                    "delete-junction",
+                    """
+                    [System.IO.Directory]::Delete($LiteralPath, $false)
+                    New-Item -ItemType Junction -Path $LiteralPath -Target $env:STACK_ATTACK_TARGET -ErrorAction Stop | Out-Null
+                    [System.IO.File]::WriteAllText($env:STACK_ATTACK_MARKER, 'junction')
+                    """,
+                ),
+            )
+            for name, attack in attacks:
+                with self.subTest(attack=name), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    capture = base / "capture"
+                    capture.mkdir()
+                    moved = base / "renamed staging"
+                    target = base / "junction target"
+                    target.mkdir()
+                    attempt_marker = base / f"{name}.attempted"
+                    marker = base / f"{name}.marker"
+                    original_secret = (root / ".env").read_bytes()
+                    prelude = f"""
+                    $global:StackAttackAttempted = $false
+                    function global:Get-Acl {{
+                        [CmdletBinding()]
+                        param([string]$LiteralPath)
+                        $acl = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop
+                        if (-not $global:StackAttackAttempted -and
+                            [System.IO.Path]::GetFileName([string]$LiteralPath) -clike 'deploy.*' -and
+                            $acl.AreAccessRulesProtected) {{
+                            $global:StackAttackAttempted = $true
+                            [System.IO.File]::WriteAllText($env:STACK_ATTACK_ATTEMPT, 'attempted')
+                            {attack}
+                        }}
+                        return $acl
+                    }}
+                    """
+                    result = self.run_script_with_prelude(
+                        shell,
+                        root,
+                        fake_dir,
+                        "deploy.ps1",
+                        prelude,
+                        "core",
+                        log=log,
+                        capture=capture,
+                        extra_env={
+                            "STACK_ATTACK_ATTEMPT": str(attempt_marker),
+                            "STACK_ATTACK_MARKER": str(marker),
+                            "STACK_ATTACK_MOVED": str(moved),
+                            "STACK_ATTACK_TARGET": str(target),
+                        },
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertTrue(attempt_marker.exists(), result.stderr)
+                    self.assertFalse(marker.exists(), result.stderr)
+                    self.assertFalse(moved.exists(), result.stderr)
+                    self.assertEqual([], list(target.iterdir()), result.stderr)
+                    self.assertEqual([], read_operations(log))
+                    self.assertEqual([], list(capture.iterdir()))
+                    self.assertFalse((root / ".artifacts").exists(), result.stderr)
+                    self.assertEqual(original_secret, (root / ".env").read_bytes())
+                    self.assertEqual([], list(base.rglob("runtime-env-*")))
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_fails_closed_when_artifact_parent_acl_hardening_is_a_no_op(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                artifact_parent = root / ".artifacts"
+                artifact_parent.mkdir()
+                log = base / "fake.log"
+                capture = base / "capture"
+                capture.mkdir()
+                original_secret = (root / ".env").read_bytes()
+                prelude = """
+                function global:Set-Acl {
+                    [CmdletBinding()]
+                    param([string]$LiteralPath, $AclObject)
+                    if ([System.IO.Path]::GetFileName([string]$LiteralPath) -ceq '.artifacts') {
+                        return
+                    }
+                    Microsoft.PowerShell.Security\\Set-Acl @PSBoundParameters
+                }
+                """
+                result = self.run_script_with_prelude(
+                    shell,
+                    root,
+                    fake_dir,
+                    "deploy.ps1",
+                    prelude,
+                    "core",
+                    log=log,
+                    capture=capture,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("private artifact parent ACL", result.stderr)
+                self.assertEqual([], read_operations(log))
+                self.assertEqual([], list(capture.iterdir()))
+                self.assertEqual([], list(artifact_parent.iterdir()))
+                self.assertEqual(original_secret, (root / ".env").read_bytes())
+                self.assertEqual([], list(base.rglob("runtime-env-*")))
 
         self.assert_for_each_shell(verify)
 

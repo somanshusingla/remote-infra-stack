@@ -10,6 +10,115 @@ function Test-IsWindowsHost {
     return [System.IO.Path]::DirectorySeparatorChar -eq '\'
 }
 
+function Initialize-NativeDirectoryLeaseType {
+    if ($null -ne ([System.Management.Automation.PSTypeName]'RemoteInfraStack.NativeDirectoryLease').Type) {
+        return
+    }
+
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace RemoteInfraStack
+{
+    public static class NativeDirectoryLease
+    {
+        private const uint GenericRead = 0x80000000;
+        private const uint FileFlagBackupSemantics = 0x02000000;
+        private const uint FileFlagOpenReparsePoint = 0x00200000;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            FileShare shareMode,
+            IntPtr securityAttributes,
+            FileMode creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile
+        );
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation
+        {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle file,
+            out ByHandleFileInformation information
+        );
+
+        public static SafeFileHandle Open(string path)
+        {
+            SafeFileHandle handle = CreateFile(
+                path,
+                GenericRead,
+                FileShare.Read | FileShare.Write,
+                IntPtr.Zero,
+                FileMode.Open,
+                FileFlagBackupSemantics | FileFlagOpenReparsePoint,
+                IntPtr.Zero
+            );
+            if (handle.IsInvalid)
+            {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error, "Could not acquire a non-share-delete directory handle");
+            }
+            return handle;
+        }
+
+        public static string GetIdentity(SafeFileHandle handle)
+        {
+            ByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information))
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "Could not read directory identity from its durable handle"
+                );
+            }
+            ulong fileIndex = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
+            return information.VolumeSerialNumber.ToString("X8") + ":" + fileIndex.ToString("X16");
+        }
+    }
+}
+'@
+}
+
+function Open-PrivateDirectoryLease {
+    param([string]$Path, [string]$Label)
+
+    if (-not (Test-IsWindowsHost)) {
+        Throw-CommonError 'deploy.ps1 cannot prove a durable private staging boundary on this platform; use scripts/deploy.sh'
+    }
+    try {
+        Initialize-NativeDirectoryLeaseType
+        $lease = [RemoteInfraStack.NativeDirectoryLease]::Open($Path)
+        if ($null -eq $lease -or $lease.IsInvalid -or $lease.IsClosed) {
+            Throw-CommonError "$Label directory lease is invalid"
+        }
+        return $lease
+    } catch {
+        Throw-CommonError "could not acquire a durable private $Label directory lease: $($_.Exception.Message)"
+    }
+}
+
 function Assert-SafeDirectory {
     param([string]$Path, [string]$Label)
 
@@ -73,38 +182,74 @@ function Assert-PrivateWindowsAcl {
             Throw-CommonError "$Label ACL does not grant current-user FullControl"
         }
     } catch {
-        Throw-CommonError "private staging ACL verification failed for ${Label}: $($_.Exception.Message)"
+        Throw-CommonError "private $Label ACL verification failed: $($_.Exception.Message)"
     }
 }
 
-function Set-PrivateStagingPermissions {
-    param([string]$Path)
+function Set-PrivateDirectoryPermissions {
+    param([string]$Path, [string]$Label)
 
-    if (Test-IsWindowsHost) {
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        $security = Get-Acl -LiteralPath $Path -ErrorAction Stop
-        $security.SetAccessRuleProtection($true, $false)
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $identity,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        [void]$security.SetAccessRule($rule)
-        try {
-            Set-Acl -LiteralPath $Path -AclObject $security -ErrorAction Stop
-        } catch {
-            Throw-CommonError "could not establish a private staging ACL: $($_.Exception.Message)"
+    if (-not (Test-IsWindowsHost)) {
+        Throw-CommonError 'deploy.ps1 cannot prove a durable private staging boundary on this platform; use scripts/deploy.sh'
+    }
+
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $security = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $security.SetAccessRuleProtection($true, $false)
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $identity,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$security.SetAccessRule($rule)
+    try {
+        Set-Acl -LiteralPath $Path -AclObject $security -ErrorAction Stop
+    } catch {
+        Throw-CommonError "could not establish a private $Label ACL: $($_.Exception.Message)"
+    }
+}
+
+function Assert-PrivateDirectoryBoundary {
+    param(
+        [string]$Path,
+        [Microsoft.Win32.SafeHandles.SafeFileHandle]$Lease,
+        [string]$Label
+    )
+
+    if ($null -eq $Lease -or $Lease.IsInvalid -or $Lease.IsClosed) {
+        Throw-CommonError "$Label directory lease is not durable"
+    }
+    $pathLease = $null
+    try {
+        $leasedIdentity = [RemoteInfraStack.NativeDirectoryLease]::GetIdentity($Lease)
+        $pathLease = [RemoteInfraStack.NativeDirectoryLease]::Open($Path)
+        $pathIdentity = [RemoteInfraStack.NativeDirectoryLease]::GetIdentity($pathLease)
+        if ($pathIdentity -cne $leasedIdentity) {
+            Throw-CommonError "$Label pathname no longer identifies its leased directory"
         }
-        Assert-PrivateWindowsAcl -Path $Path -RequireProtected $true -Label 'deployment staging'
-        return
+    } catch {
+        Throw-CommonError "private $Label directory identity verification failed: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $pathLease) {
+            $pathLease.Dispose()
+        }
     }
+    Assert-SafeDirectory -Path $Path -Label $Label
+    Assert-PrivateWindowsAcl -Path $Path -RequireProtected $true -Label $Label
+}
 
-    & chmod 0700 -- $Path
-    if ($LASTEXITCODE -ne 0) {
-        Throw-CommonError "could not apply private mode 0700 to $Path"
-    }
+function Assert-PrivateDeploymentBoundary {
+    param(
+        [string]$ArtifactParent,
+        [Microsoft.Win32.SafeHandles.SafeFileHandle]$ArtifactParentLease,
+        [string]$Staging,
+        [Microsoft.Win32.SafeHandles.SafeFileHandle]$StagingLease
+    )
+
+    Assert-PrivateDirectoryBoundary -Path $ArtifactParent -Lease $ArtifactParentLease -Label 'artifact parent'
+    Assert-PrivateDirectoryBoundary -Path $Staging -Lease $StagingLease -Label 'staging'
 }
 
 function Assert-PrivateStagingFile {
@@ -241,6 +386,9 @@ function Export-GzipTarEntry {
 try {
     $scriptDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
     Import-Module ([System.IO.Path]::Combine($scriptDirectory, 'lib', 'Common.psm1')) -Force -DisableNameChecking
+    if (-not (Test-IsWindowsHost)) {
+        Throw-CommonError 'deploy.ps1 cannot prove a durable private staging boundary on this platform; use scripts/deploy.sh'
+    }
     foreach ($commandName in @('git', 'ssh', 'scp')) {
         Assert-CommandAvailable -Name $commandName
     }
@@ -278,20 +426,31 @@ try {
     $headOid = [string]$headOutput[0]
 
     $createdArtifactParent = $false
-    if (-not [System.IO.Directory]::Exists($artifactParent)) {
-        [void][System.IO.Directory]::CreateDirectory($artifactParent)
-        $createdArtifactParent = $true
-    }
-    Assert-SafeDirectory -Path $artifactParent -Label '.artifacts'
-
-    $operationId = [System.Guid]::NewGuid().ToString('N')
-    $staging = [System.IO.Path]::Combine($artifactParent, "deploy.$operationId")
-    [void][System.IO.Directory]::CreateDirectory($staging)
-    Assert-SafeDirectory -Path $staging -Label 'deployment staging'
-
+    $artifactParentLease = $null
+    $stagingLease = $null
+    $staging = $null
     [string[]]$remoteCleanupPaths = @()
     try {
-        Set-PrivateStagingPermissions -Path $staging
+        if (-not [System.IO.Directory]::Exists($artifactParent)) {
+            [void][System.IO.Directory]::CreateDirectory($artifactParent)
+            $createdArtifactParent = $true
+        }
+        $artifactParentLease = Open-PrivateDirectoryLease -Path $artifactParent -Label 'artifact parent'
+        Assert-SafeDirectory -Path $artifactParent -Label 'artifact parent'
+        Set-PrivateDirectoryPermissions -Path $artifactParent -Label 'artifact parent'
+        Assert-PrivateDirectoryBoundary -Path $artifactParent -Lease $artifactParentLease -Label 'artifact parent'
+
+        $operationId = [System.Guid]::NewGuid().ToString('N')
+        $staging = [System.IO.Path]::Combine($artifactParent, "deploy.$operationId")
+        [void][System.IO.Directory]::CreateDirectory($staging)
+        $stagingLease = Open-PrivateDirectoryLease -Path $staging -Label 'staging'
+        Assert-SafeDirectory -Path $staging -Label 'staging'
+        Set-PrivateDirectoryPermissions -Path $staging -Label 'staging'
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
 
         $shortSha = $headOid.Substring(0, 12).ToLowerInvariant()
         $releaseName = '{0}-{1}-{2}' -f @(
@@ -304,36 +463,83 @@ try {
         $runtimeEnvSnapshot = [System.IO.Path]::Combine($staging, "runtime-env-$operationId.env")
         $receiverSnapshot = [System.IO.Path]::Combine($staging, "deploy-release-$operationId.sh")
 
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         [System.IO.File]::Copy(
             [System.IO.Path]::Combine($repositoryRoot, '.env'),
             $runtimeEnvSnapshot,
             $false
         )
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         Assert-PrivateStagingFile -Path $runtimeEnvSnapshot -Staging $staging -Label 'runtime environment snapshot'
 
         $archiveArguments = @(
             '-C', $repositoryRoot,
             'archive', '--format=tar.gz', "--output=$archive", $headOid
         )
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         & git @archiveArguments
         if ($LASTEXITCODE -ne 0) {
             Throw-CommonError "git archive failed with exit code $LASTEXITCODE"
         }
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
+        Assert-PrivateStagingFile -Path $archive -Staging $staging -Label 'release archive'
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         Assert-PrivateStagingFile -Path $archive -Staging $staging -Label 'release archive'
         Export-GzipTarEntry -Archive $archive -EntryName 'scripts/remote/deploy-release.sh' -Destination $receiverSnapshot
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         Assert-PrivateStagingFile -Path $receiverSnapshot -Staging $staging -Label 'release receiver snapshot'
 
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
+        Assert-PrivateStagingFile -Path $archive -Staging $staging -Label 'release archive'
         $hash = Get-FileHash -LiteralPath $archive -Algorithm SHA256
         $digest = ([string]$hash.Hash).ToLowerInvariant()
         if ($digest -cnotmatch '^[0-9a-f]{64}$') {
             Throw-CommonError 'Get-FileHash returned an invalid SHA256 digest'
         }
         $ascii = New-Object System.Text.ASCIIEncoding
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         [System.IO.File]::WriteAllText(
             $checksum,
             ('{0}  {1}' -f $digest, [System.IO.Path]::GetFileName($archive)) + "`n",
             $ascii
         )
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
         Assert-PrivateStagingFile -Path $checksum -Staging $staging -Label 'release checksum'
 
         $currentHead = @(Invoke-GitText -Repository $repositoryRoot -Arguments @('rev-parse', '--verify', 'HEAD^{commit}'))
@@ -344,6 +550,16 @@ try {
         Assert-FileNotTracked -Repository $repositoryRoot -Path ([System.IO.Path]::Combine($repositoryRoot, '.env')) -Label '.env'
         Assert-FileNotTracked -Repository $repositoryRoot -Path ([System.IO.Path]::Combine($repositoryRoot, 'remote.env')) -Label 'repository remote.env'
         Assert-FileNotTracked -Repository $repositoryRoot -Path $remoteEnv -Label 'selected remote.env'
+
+        Assert-PrivateDeploymentBoundary `
+            -ArtifactParent $artifactParent `
+            -ArtifactParentLease $artifactParentLease `
+            -Staging $staging `
+            -StagingLease $stagingLease
+        Assert-PrivateStagingFile -Path $archive -Staging $staging -Label 'release archive'
+        Assert-PrivateStagingFile -Path $checksum -Staging $staging -Label 'release checksum'
+        Assert-PrivateStagingFile -Path $runtimeEnvSnapshot -Staging $staging -Label 'runtime environment snapshot'
+        Assert-PrivateStagingFile -Path $receiverSnapshot -Staging $staging -Label 'release receiver snapshot'
 
         $remoteIncoming = '{0}/incoming' -f $configuration['REMOTE_ROOT']
         $remoteArchive = "$remoteIncoming/$([System.IO.Path]::GetFileName($archive))"
@@ -386,7 +602,13 @@ try {
                 # Cleanup is idempotent and must not hide the deployment result.
             }
         }
-        if ([System.IO.Directory]::Exists($staging)) {
+        if ($null -ne $stagingLease) {
+            $stagingLease.Dispose()
+        }
+        if ($null -ne $artifactParentLease) {
+            $artifactParentLease.Dispose()
+        }
+        if ($null -ne $staging -and [System.IO.Directory]::Exists($staging)) {
             Remove-Item -LiteralPath $staging -Recurse -Force
         }
         if ($createdArtifactParent -and [System.IO.Directory]::Exists($artifactParent)) {
