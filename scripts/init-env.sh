@@ -78,6 +78,9 @@ done <"$template"
 
 if [[ "$force" == true ]]; then
   mv -f "$temporary" "$output"
+elif [[ -e "$output" || -L "$output" ]]; then
+  printf 'Refusing to overwrite %s without --force\n' "$output" >&2
+  exit 1
 elif ln "$temporary" "$output"; then
   rm -f "$temporary"
 else
