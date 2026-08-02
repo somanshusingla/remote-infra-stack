@@ -39,7 +39,10 @@ function Assert-LoopbackPortAvailable {
         )
         $listener.Start()
     } catch [System.Net.Sockets.SocketException] {
-        Throw-CommonError "local port is already in use: $Port"
+        $message = Get-TunnelSocketProbeFailureMessage `
+            -Port $Port `
+            -SocketError $_.Exception.SocketErrorCode
+        Throw-CommonError $message
     } finally {
         if ($null -ne $listener) {
             $listener.Stop()

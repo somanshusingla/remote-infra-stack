@@ -83,7 +83,14 @@ load_remote_env() {
     common_die "REMOTE_USER contains unsupported characters"
   if [[ -n "$REMOTE_PORT" ]]; then
     [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || common_die "REMOTE_PORT must be an integer"
-    ((REMOTE_PORT >= 1 && REMOTE_PORT <= 65535)) || common_die "REMOTE_PORT must be between 1 and 65535"
+    local remote_port_digits=$REMOTE_PORT
+    while [[ "$remote_port_digits" == 0* && ${#remote_port_digits} -gt 1 ]]; do
+      remote_port_digits=${remote_port_digits#0}
+    done
+    ((${#remote_port_digits} <= 5)) || common_die "REMOTE_PORT must be between 1 and 65535"
+    ((10#$remote_port_digits >= 1 && 10#$remote_port_digits <= 65535)) ||
+      common_die "REMOTE_PORT must be between 1 and 65535"
+    REMOTE_PORT=$((10#$remote_port_digits))
   fi
   [[ -n "$REMOTE_ROOT" && "$REMOTE_ROOT" != /* && "$REMOTE_ROOT" != ~* && ! "$REMOTE_ROOT" =~ ^[A-Za-z]: ]] ||
     common_die "REMOTE_ROOT must be a relative REMOTE_ROOT path"

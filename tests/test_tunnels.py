@@ -24,19 +24,6 @@ PROFILE_FORWARDS = {
     "tools": ["5050:127.0.0.1:5050", "5540:127.0.0.1:5540"],
 }
 
-EXPECTED_ALL_FORWARDS = [
-    "5432:127.0.0.1:15432",
-    "6379:127.0.0.1:16379",
-    "18000:127.0.0.1:18000",
-    "9200:127.0.0.1:9200",
-    "5601:127.0.0.1:5601",
-    "3000:127.0.0.1:3000",
-    "9090:127.0.0.1:9090",
-    "9091:127.0.0.1:9091",
-    "5050:127.0.0.1:5050",
-    "5540:127.0.0.1:5540",
-]
-
 NATIVE_SSH_FAKE = r"""
 using System;
 using System.Collections.Generic;
@@ -609,6 +596,87 @@ class TunnelTests(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as rebound:
                     rebound.bind(("127.0.0.1", available_port))
+
+    def test_powershell_socket_probe_failures_have_specific_safe_diagnostics(self):
+        if not POWERSHELLS:
+            self.skipTest("PowerShell is not installed")
+        module_path = str(repo_path("scripts/lib/Common.psm1")).replace("'", "''")
+        command = (
+            f"Import-Module '{module_path}' -Force -DisableNameChecking; "
+            "$messages=@("
+            "Get-TunnelSocketProbeFailureMessage -Port 18000 "
+            "-SocketError ([System.Net.Sockets.SocketError]::AddressAlreadyInUse); "
+            "Get-TunnelSocketProbeFailureMessage -Port 18000 "
+            "-SocketError ([System.Net.Sockets.SocketError]::AccessDenied); "
+            "Get-TunnelSocketProbeFailureMessage -Port 18000 "
+            "-SocketError ([System.Net.Sockets.SocketError]::NetworkDown)"
+            "); $messages | ForEach-Object { [Console]::Out.WriteLine($_) }"
+        )
+        expected = [
+            "local port is already in use: 18000",
+            (
+                "local port probe access was denied for 18000; "
+                "check permissions and Windows excluded port ranges"
+            ),
+            "local port probe failed for 18000 (SocketError: NetworkDown)",
+        ]
+        for shell in POWERSHELLS:
+            with self.subTest(shell=Path(shell).name):
+                result = subprocess.run(
+                    [
+                        shell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(expected, result.stdout.splitlines())
+
+    def test_remote_ssh_port_is_normalized_as_bounded_decimal_before_tunneling(self):
+        valid = (("00022", "22"), ("00008", "8"))
+        for configured, expected in valid:
+            remote_env = self.remote_env_with(REMOTE_PORT=configured)
+            if BASH is not None:
+                with self.subTest(client="bash", configured=configured):
+                    log = self.base / f"bash-remote-{configured}.log"
+                    result = self.run_bash("vector", log=log, remote_env=remote_env)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    operation = read_operations(log)[0]
+                    self.assertEqual(expected, operation[operation.index("-p") + 1])
+            for shell in POWERSHELLS:
+                with self.subTest(client=Path(shell).name, configured=configured):
+                    log = self.base / f"{Path(shell).name}-remote-{configured}.log"
+                    result = self.run_powershell(
+                        shell, "vector", log=log, remote_env=remote_env
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    operation = read_operations(log)[0]
+                    self.assertEqual(expected, operation[operation.index("-p") + 1])
+
+        invalid = ("00000", "65536", "0100000", "999999999999999999999")
+        for configured in invalid:
+            remote_env = self.remote_env_with(REMOTE_PORT=configured)
+            if BASH is not None:
+                with self.subTest(client="bash", invalid=configured):
+                    log = self.base / f"bash-invalid-remote-{configured}.log"
+                    result = self.run_bash("vector", log=log, remote_env=remote_env)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("REMOTE_PORT", result.stderr)
+                    self.assertEqual([], read_operations(log))
+            for shell in POWERSHELLS:
+                with self.subTest(client=Path(shell).name, invalid=configured):
+                    log = self.base / f"{Path(shell).name}-invalid-remote-{configured}.log"
+                    result = self.run_powershell(
+                        shell, "vector", log=log, remote_env=remote_env
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("REMOTE_PORT", result.stderr)
+                    self.assertEqual([], read_operations(log))
 
 
 if __name__ == "__main__":

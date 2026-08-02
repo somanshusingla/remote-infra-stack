@@ -92,11 +92,13 @@ function Import-RemoteEnv {
         }
         $parsedPort = 0
         if (-not [int]::TryParse($port, [ref]$parsedPort)) {
-            Throw-CommonError 'REMOTE_PORT must be an integer'
+            Throw-CommonError 'REMOTE_PORT must be between 1 and 65535'
         }
         if ($parsedPort -lt 1 -or $parsedPort -gt 65535) {
             Throw-CommonError 'REMOTE_PORT must be between 1 and 65535'
         }
+        $port = $parsedPort.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        $values['REMOTE_PORT'] = $port
     }
     if (
         [string]::IsNullOrEmpty($root) -or
@@ -220,6 +222,25 @@ function Assert-CommandAvailable {
     if ($null -eq (Get-Command $Name -ErrorAction SilentlyContinue)) {
         Throw-CommonError "required command is unavailable: $Name"
     }
+}
+
+function Get-TunnelSocketProbeFailureMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][System.Net.Sockets.SocketError]$SocketError
+    )
+
+    if ($SocketError -eq [System.Net.Sockets.SocketError]::AddressAlreadyInUse) {
+        return "local port is already in use: $Port"
+    }
+    if ($SocketError -eq [System.Net.Sockets.SocketError]::AccessDenied) {
+        return (
+            "local port probe access was denied for $Port; " +
+            'check permissions and Windows excluded port ranges'
+        )
+    }
+    return "local port probe failed for $Port (SocketError: $SocketError)"
 }
 
 function Invoke-GitText {
@@ -374,6 +395,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-PosixCommand',
     'Invoke-SshCommand',
     'Assert-CommandAvailable',
+    'Get-TunnelSocketProbeFailureMessage',
     'Invoke-GitText',
     'Assert-CleanGitHead',
     'Assert-FileNotTracked',

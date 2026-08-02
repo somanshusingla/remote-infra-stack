@@ -996,6 +996,48 @@ class PowerShellOperatorTests(unittest.TestCase):
 
         self.assert_for_each_shell(verify)
 
+    def test_remote_port_is_normalized_as_bounded_decimal_before_ssh(self):
+        def verify(shell: str):
+            for configured, expected in (("00022", "22"), ("00008", "8")):
+                with self.subTest(configured=configured), self.operator_repository() as (base, root, fake_dir):
+                    remote_env = self.remote_env_with(
+                        base / "remote.env", REMOTE_PORT=configured
+                    )
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell,
+                        root,
+                        fake_dir,
+                        "stack.ps1",
+                        "status",
+                        log=log,
+                        remote_env=remote_env,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    operation = read_operations(log)[0]
+                    self.assertEqual(expected, operation[operation.index("-p") + 1])
+
+            for configured in ("00000", "65536", "0100000", "999999999999999999999"):
+                with self.subTest(configured=configured), self.operator_repository() as (base, root, fake_dir):
+                    remote_env = self.remote_env_with(
+                        base / "remote.env", REMOTE_PORT=configured
+                    )
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell,
+                        root,
+                        fake_dir,
+                        "stack.ps1",
+                        "status",
+                        log=log,
+                        remote_env=remote_env,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("REMOTE_PORT", result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
     def test_configuration_dispatch_and_secrets_are_exactly_case_sensitive(self):
         def verify(shell: str):
             remote_content = repo_path("tests/fixtures/remote.env").read_text(encoding="utf-8")

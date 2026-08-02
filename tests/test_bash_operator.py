@@ -627,6 +627,29 @@ class BashOperatorTests(unittest.TestCase):
             self.assertNotIn("-p", operation)
             self.assertNotIn("-P", operation)
 
+    def test_remote_port_is_normalized_as_bounded_decimal_before_ssh(self):
+        for configured, expected in (("00022", "22"), ("00008", "8")):
+            with self.subTest(configured=configured), self.operator_repository() as root:
+                remote_env = self.remote_env_with(root, REMOTE_PORT=configured)
+                log = root / "fake.log"
+                result = self.run_script(
+                    root, "stack.sh", "status", log=log, remote_env=remote_env
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                operation = read_operations(log)[0]
+                self.assertEqual(expected, operation[operation.index("-p") + 1])
+
+        for configured in ("00000", "65536", "0100000", "999999999999999999999"):
+            with self.subTest(configured=configured), self.operator_repository() as root:
+                remote_env = self.remote_env_with(root, REMOTE_PORT=configured)
+                log = root / "fake.log"
+                result = self.run_script(
+                    root, "stack.sh", "status", log=log, remote_env=remote_env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("REMOTE_PORT", result.stderr)
+                self.assertEqual([], read_operations(log))
+
     def test_remote_target_rejects_option_like_and_colon_values(self):
         cases = (
             ({"REMOTE_HOST": "-host"}, "REMOTE_HOST must not begin with an option prefix"),
