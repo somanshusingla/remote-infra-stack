@@ -1,3 +1,4 @@
+import json
 import re
 import tempfile
 import unittest
@@ -11,13 +12,27 @@ class RepositoryContractTests(unittest.TestCase):
         for name in ("compose.yaml", "versions.env", ".env.example", "remote.env.example"):
             self.assertTrue(repo_path(name).is_file(), name)
 
-    def test_versions_are_explicit_and_never_latest(self):
+    def test_versions_match_verified_manifest_inventory(self):
         versions = read_env(repo_path("versions.env"))
-        self.assertGreaterEqual(len(versions), 12)
-        for name, image in versions.items():
-            self.assertRegex(name, r"_IMAGE$")
-            self.assertNotRegex(image, r"(?::|@)latest(?:$|@)")
-            self.assertRegex(image, r"[:@]")
+        inventory_path = repo_path("tests/fixtures/verified-manifests.json")
+        self.assertTrue(inventory_path.is_file(), "verified manifest inventory is required")
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        verified_images = inventory["images"]
+
+        self.assertEqual(13, len(versions))
+        self.assertEqual(13, len(verified_images))
+        self.assertEqual(
+            {name: record["reference"] for name, record in verified_images.items()},
+            versions,
+        )
+        for name, record in verified_images.items():
+            self.assertRegex(name, r"^[A-Z][A-Z0-9_]*_IMAGE$")
+            self.assertRegex(
+                record["reference"],
+                r"^[a-z0-9.-]+(?:/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$",
+            )
+            self.assertEqual("manifest-list", record["kind"], name)
+            self.assertEqual(["linux/amd64"], record["verified_platforms"], name)
 
     def test_secret_files_are_ignored(self):
         ignored = repo_path(".gitignore").read_text(encoding="utf-8")

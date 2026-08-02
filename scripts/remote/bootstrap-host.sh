@@ -30,7 +30,7 @@ dpkg_arch=$(dpkg --print-architecture 2>/dev/null || true)
 for command_name in systemctl apt-get sudo curl; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command is unavailable: $command_name"
 done
-[[ -d /run/systemd/system ]] && systemctl show-environment >/dev/null 2>&1 ||
+systemctl show-environment >/dev/null 2>&1 ||
   die "systemd is not operational; run this bootstrap on an Ubuntu systemd host"
 sudo -n true >/dev/null 2>&1 || die "passwordless sudo is required; configure sudo and retry"
 
