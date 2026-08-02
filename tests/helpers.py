@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -20,7 +21,17 @@ def render_compose(*profiles: str) -> dict:
     for profile in profiles:
         command.extend(["--profile", profile])
     command.extend(["config", "--format", "json"])
-    result = subprocess.run(command, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+    environment = os.environ | {
+        "STACK_OPENSEARCH_CONFIG_B64": base64.b64encode(
+            repo_path("config/opensearch/opensearch.yml").read_bytes()
+        ).decode("ascii"),
+        "STACK_OPENSEARCH_ENTRYPOINT_B64": base64.b64encode(
+            repo_path("config/opensearch/docker-entrypoint.sh").read_bytes()
+        ).decode("ascii"),
+    }
+    result = subprocess.run(
+        command, cwd=REPO_ROOT, env=environment, check=True, capture_output=True, text=True
+    )
     return json.loads(result.stdout)
 
 

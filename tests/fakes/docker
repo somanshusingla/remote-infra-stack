@@ -11,19 +11,42 @@ fi
 
 joined=" $* "
 project_directory=
+compose_file=
+versions_file=
 arguments=("$@")
 for ((index = 0; index < ${#arguments[@]}; index++)); do
   if [[ "${arguments[$index]}" == --project-directory && $((index + 1)) -lt ${#arguments[@]} ]]; then
     project_directory=${arguments[$((index + 1))]}
-    break
+  elif [[ "${arguments[$index]}" == --file && $((index + 1)) -lt ${#arguments[@]} ]]; then
+    compose_file=${arguments[$((index + 1))]}
+  elif [[ "${arguments[$index]}" == --env-file && -z "$versions_file" && $((index + 1)) -lt ${#arguments[@]} ]]; then
+    versions_file=${arguments[$((index + 1))]}
   fi
 done
 if [[ -n "${STACK_FAKE_RENDER_LOG:-}" && "$joined" == *" config "* ]]; then
-  printf '%s\n%s\n%s\n' \
-    "$project_directory" \
-    "$project_directory/config/opensearch/opensearch.yml" \
-    "$project_directory/config/opensearch/docker-entrypoint.sh" \
-    >>"$STACK_FAKE_RENDER_LOG"
+  printf '%s\n' "$project_directory" >>"$STACK_FAKE_RENDER_LOG"
+fi
+if [[ -n "${STACK_FAKE_CONTENT_LOG:-}" && "$joined" == *" config "* ]]; then
+  config_source=$project_directory/config/opensearch/opensearch.yml
+  wrapper_source=$project_directory/config/opensearch/docker-entrypoint.sh
+  {
+    printf 'compose.yaml '
+    sha256sum -- "$compose_file" | awk '{ print $1 }'
+    printf 'versions.env '
+    sha256sum -- "$versions_file" | awk '{ print $1 }'
+    printf 'config/opensearch/opensearch.yml '
+    if [[ -n "${STACK_OPENSEARCH_CONFIG_B64:-}" ]]; then
+      printf '%s' "$STACK_OPENSEARCH_CONFIG_B64" | base64 --decode | sha256sum | awk '{ print $1 }'
+    else
+      sha256sum -- "$config_source" | awk '{ print $1 }'
+    fi
+    printf 'config/opensearch/docker-entrypoint.sh '
+    if [[ -n "${STACK_OPENSEARCH_ENTRYPOINT_B64:-}" ]]; then
+      printf '%s' "$STACK_OPENSEARCH_ENTRYPOINT_B64" | base64 --decode | sha256sum | awk '{ print $1 }'
+    else
+      sha256sum -- "$wrapper_source" | awk '{ print $1 }'
+    fi
+  } >>"$STACK_FAKE_CONTENT_LOG"
 fi
 if [[ -n "${STACK_FAKE_SWAP_RELEASE:-}" && ! -e "${STACK_FAKE_SWAP_MARKER:-}" ]]; then
   mv -- "$STACK_FAKE_SWAP_RELEASE" "$STACK_FAKE_SWAP_RELEASE.verified"

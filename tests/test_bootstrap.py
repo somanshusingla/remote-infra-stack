@@ -253,7 +253,7 @@ esac
             )
             expected_plan = (
                 "apt-get update",
-                "apt-get install --yes ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq",
+                "apt-get install --yes ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3",
                 "install -m 0755 -d /etc/apt/keyrings",
                 "curl --fail --silent --show-error --location",
                 "chmod a+r /etc/apt/keyrings/docker.asc",

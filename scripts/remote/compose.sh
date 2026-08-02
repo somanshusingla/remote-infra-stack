@@ -11,6 +11,10 @@ release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 release_files_dir=${STACK_RELEASE_HELD_DIR:-$release_dir}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
 runtime_env=${STACK_RUNTIME_ENV_FILE:-$stack_root/runtime/.env}
+versions_env=${STACK_VERSIONS_ENV_FILE:-$release_files_dir/versions.env}
+compose_file=${STACK_COMPOSE_FILE:-$release_files_dir/compose.yaml}
+opensearch_config=${STACK_OPENSEARCH_CONFIG_FILE:-$release_files_dir/config/opensearch/opensearch.yml}
+opensearch_entrypoint=${STACK_OPENSEARCH_ENTRYPOINT_FILE:-$release_files_dir/config/opensearch/docker-entrypoint.sh}
 
 profiles=()
 declare -A selected=()
@@ -42,12 +46,22 @@ if [[ "${STACK_TEST_MODE:-0}" == 1 && -z "${DOCKER_BIN:-}" && -x "$release_dir/t
   docker_bin=$release_dir/tests/fakes/docker
 fi
 
+for transport_file in "$opensearch_config" "$opensearch_entrypoint"; do
+  [[ -f "$transport_file" ]] || die "verified OpenSearch input is unavailable"
+  transport_size=$(stat -Lc '%s' -- "$transport_file")
+  ((transport_size > 0 && transport_size <= 65536)) ||
+    die "verified OpenSearch input exceeds the 64 KiB transport boundary"
+done
+STACK_OPENSEARCH_CONFIG_B64=$(base64 --wrap=0 <"$opensearch_config")
+STACK_OPENSEARCH_ENTRYPOINT_B64=$(base64 --wrap=0 <"$opensearch_entrypoint")
+export STACK_OPENSEARCH_CONFIG_B64 STACK_OPENSEARCH_ENTRYPOINT_B64
+
 command=(
   "$docker_bin" compose
-  --env-file "$release_files_dir/versions.env"
+  --env-file "$versions_env"
   --env-file "$runtime_env"
   --project-directory "$release_dir"
-  --file "$release_files_dir/compose.yaml"
+  --file "$compose_file"
 )
 for profile in "${profiles[@]}"; do
   command+=(--profile "$profile")

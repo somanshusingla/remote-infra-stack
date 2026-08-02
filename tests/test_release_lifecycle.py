@@ -39,6 +39,8 @@ class ReleaseLifecycleTests(unittest.TestCase):
             for relative in (
                 "compose.yaml", "versions.env", "scripts/remote/compose.sh",
                 "scripts/remote/health.sh", "scripts/remote/stack.sh",
+                "config/opensearch/opensearch.yml",
+                "config/opensearch/docker-entrypoint.sh",
             ):
                 output.add(repo_path(relative), arcname=relative)
             for info, content in extra_members:
@@ -124,6 +126,26 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.assertTrue(snapshot.endswith("/runtime.env"), snapshot)
         self.assertNotEqual(shell_path(self.root / "runtime/.env"), snapshot)
 
+    def make_release_leaf_swap_move(self, relative, replacement):
+        wrapper = self.root / f"swap-{relative.replace('/', '-')}-mv"
+        real_move = shutil.which("mv")
+        self.assertIsNotNone(real_move)
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'source_path=${@: -2:1}\n'
+            'destination=${@: -1}\n'
+            f"{shlex.quote(real_move)} \"$@\"\n"
+            'if [[ "$source_path" == */extracted ]]; then\n'
+            f"  leaf=\"$destination/{relative}\"\n"
+            '  mv -- "$leaf" "$leaf.verified"\n'
+            f"  printf %s {shlex.quote(replacement)} >\"$leaf\"\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        return wrapper
+
     def test_checksum_mismatch_fails_before_extraction_or_docker(self):
         archive, checksum, name = self.make_archive()
         self.set_current("20260802T010000Z-current")
@@ -156,7 +178,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
             self.assertIn(operation, calls)
         self.assertEqual(0o600, (self.root / "runtime/.env").stat().st_mode & 0o777)
 
-    def test_compose_project_and_bind_sources_use_canonical_host_release_path(self):
+    def test_compose_project_directory_uses_canonical_host_release_path(self):
         archive, checksum, name = self.make_archive("20260802T121000Z-canonical")
         render_log = self.root / "rendered-paths.log"
         result = self.deploy(
@@ -165,12 +187,53 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         release = str((self.root / "releases" / name).resolve())
         paths = render_log.read_text(encoding="utf-8").splitlines()
-        self.assertEqual([
-            release,
-            f"{release}/config/opensearch/opensearch.yml",
-            f"{release}/config/opensearch/docker-entrypoint.sh",
-        ], paths)
+        self.assertEqual([release], paths)
         self.assertNotIn("/proc/self/fd", "\n".join(paths))
+
+    def test_post_install_leaf_swaps_cannot_change_verified_inputs(self):
+        expected_hashes = {
+            relative: hashlib.sha256(repo_path(relative).read_bytes()).hexdigest()
+            for relative in (
+                "compose.yaml", "versions.env",
+                "config/opensearch/opensearch.yml",
+                "config/opensearch/docker-entrypoint.sh",
+            )
+        }
+        leaves = (
+            "scripts/remote/compose.sh",
+            "scripts/remote/health.sh",
+            "compose.yaml",
+            "versions.env",
+            "config/opensearch/opensearch.yml",
+            "config/opensearch/docker-entrypoint.sh",
+        )
+        for index, relative in enumerate(leaves):
+            with self.subTest(relative=relative):
+                marker = self.root / f"executed-{index}"
+                if relative.endswith(".sh"):
+                    replacement = (
+                        "#!/usr/bin/env bash\n"
+                        f": >{shlex.quote(shell_path(marker))}\n"
+                        "exit 91\n"
+                    )
+                else:
+                    replacement = f"tampered {relative}\n"
+                move = self.make_release_leaf_swap_move(relative, replacement)
+                archive, checksum, _ = self.make_archive(
+                    f"20260802T124{index}00Z-leaf-{index}"
+                )
+                content_log = self.root / f"content-{index}.log"
+                result = self.deploy(
+                    archive, checksum, "search", MV_BIN=shell_path(move),
+                    STACK_FAKE_CONTENT_LOG=shell_path(content_log),
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(marker.exists())
+                actual = dict(
+                    line.split(" ", 1)
+                    for line in content_log.read_text(encoding="ascii").splitlines()
+                )
+                self.assertEqual(expected_hashes, actual)
 
     def test_runtime_env_leaf_swap_uses_held_private_snapshot(self):
         redirect_env = self.root / "redirect.env"
@@ -397,6 +460,66 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.assertIn("collision", collision.stderr.lower())
         self.assertEqual(calls_before, self.log.read_text(encoding="utf-8").count("\n"))
 
+    def test_failed_atomic_exchange_preserves_retained_inode_and_content(self):
+        archive, checksum, name = self.make_archive("20260802T170500Z-exchange-fails")
+        first = self.deploy(archive, checksum, STACK_FAKE_FAIL_COMMAND="config")
+        self.assertNotEqual(0, first.returncode)
+        release = self.root / "releases" / name
+        retained_script = release / "scripts/remote/compose.sh"
+        retained_script.write_text("retained-content\n", encoding="ascii")
+        before = (release.stat().st_dev, release.stat().st_ino, retained_script.read_bytes())
+        python_failure = self.root / "python-exchange-failure"
+        python_failure.write_text("#!/usr/bin/env bash\nexit 88\n", encoding="ascii")
+        python_failure.chmod(0o755)
+        calls_before = self.log.read_bytes()
+
+        retry = self.deploy(
+            archive, checksum, PYTHON_BIN=shell_path(python_failure)
+        )
+
+        self.assertNotEqual(0, retry.returncode)
+        after = (release.stat().st_dev, release.stat().st_ino, retained_script.read_bytes())
+        self.assertEqual(before, after)
+        self.assertEqual(calls_before, self.log.read_bytes())
+        self.assertFalse((self.root / "current").exists())
+        self.assert_no_private_staging()
+
+    def test_successful_retry_never_makes_release_path_absent(self):
+        archive, checksum, name = self.make_archive("20260802T170600Z-exchange-present")
+        first = self.deploy(archive, checksum, STACK_FAKE_FAIL_COMMAND="config")
+        self.assertNotEqual(0, first.returncode)
+        release = self.root / "releases" / name
+        (release / "retained-sentinel").write_text("old\n", encoding="ascii")
+        real_move = shutil.which("mv")
+        self.assertIsNotNone(real_move)
+        delayed_move = self.root / "delayed-retained-mv"
+        delayed_move.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"{shlex.quote(real_move)} \"$@\"\n"
+            'destination=${@: -1}\n'
+            'if [[ "$destination" == */retained-release ]]; then sleep 1; fi\n',
+            encoding="ascii",
+        )
+        delayed_move.chmod(0o755)
+        absence = self.root / "release-was-absent"
+        stop = self.root / "stop-watcher"
+        watcher = subprocess.Popen([
+            BASH_BIN, "-c",
+            'while [[ ! -e "$1" ]]; do [[ -e "$2" ]] || : >"$3"; done',
+            "watch-release", shell_path(stop), shell_path(release), shell_path(absence),
+        ])
+        try:
+            retry = self.deploy(archive, checksum, MV_BIN=shell_path(delayed_move))
+        finally:
+            stop.touch()
+            watcher.wait(timeout=5)
+
+        self.assertEqual(0, retry.returncode, retry.stderr)
+        self.assertFalse(absence.exists())
+        self.assertFalse((release / "retained-sentinel").exists())
+        self.assert_no_private_staging()
+
     def test_digest_marker_is_installed_atomically_with_fresh_release(self):
         archive, checksum, name = self.make_archive("20260802T171000Z-atomic-marker")
         real_move = shutil.which("mv")
@@ -430,11 +553,13 @@ class ReleaseLifecycleTests(unittest.TestCase):
         release = self.root / "releases" / name
         swap_marker = self.root / "release-swapped"
         tamper_marker = self.root / "replacement-executed"
+        content_log = self.root / "held-content.log"
         result = self.deploy(
             archive, checksum,
             STACK_FAKE_SWAP_RELEASE=shell_path(release),
             STACK_FAKE_SWAP_MARKER=shell_path(swap_marker),
             STACK_FAKE_TAMPER_MARKER=shell_path(tamper_marker),
+            STACK_FAKE_CONTENT_LOG=shell_path(content_log),
         )
         self.assertNotEqual(0, result.returncode)
         self.assertTrue(swap_marker.exists())
@@ -443,8 +568,20 @@ class ReleaseLifecycleTests(unittest.TestCase):
         first_call = shlex.split(self.log.read_text(encoding="utf-8").splitlines()[0])
         self.assertIn("--file", first_call)
         compose_file = first_call[first_call.index("--file") + 1]
-        self.assertIn("/proc/self/fd/", compose_file)
-        self.assertTrue(compose_file.endswith("/compose.yaml"), compose_file)
+        self.assertRegex(compose_file, r"^/proc/self/fd/[0-9]+$")
+        expected_hashes = {
+            relative: hashlib.sha256(repo_path(relative).read_bytes()).hexdigest()
+            for relative in (
+                "compose.yaml", "versions.env",
+                "config/opensearch/opensearch.yml",
+                "config/opensearch/docker-entrypoint.sh",
+            )
+        }
+        actual_hashes = dict(
+            line.split(" ", 1)
+            for line in content_log.read_text(encoding="ascii").splitlines()
+        )
+        self.assertEqual(expected_hashes, actual_hashes)
 
     def test_pruning_keeps_older_named_active_and_ignores_unexpected_symlink(self):
         self.set_current("20260802T200000Z-previous")

@@ -98,7 +98,7 @@ write_root_file() {
 }
 
 prerequisite_packages=(
-  ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq
+  ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3
 )
 conflicting_packages=(
   docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc

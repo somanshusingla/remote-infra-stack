@@ -45,6 +45,8 @@ done
 if [[ -n "${selected[tools]+x}" && -z "${selected[core]+x}" ]]; then
   die "tools requires core"
 fi
+python_bin=${PYTHON_BIN:-python3}
+command -v "$python_bin" >/dev/null 2>&1 || die "python3 is required for atomic release exchange"
 
 [[ -d "$root" ]] || die "stack root must already exist as a directory"
 root=$(realpath -e -- "$root")
@@ -187,10 +189,33 @@ mkdir -- "$extracted"
 tar --extract --gzip --file "$staged_archive" --directory "$extracted" \
   --no-same-owner --no-same-permissions --delay-directory-restore ||
   die "archive extraction failed"
-for required in compose.yaml versions.env scripts/remote/compose.sh scripts/remote/health.sh; do
+for required in \
+  compose.yaml versions.env scripts/remote/compose.sh scripts/remote/health.sh \
+  config/opensearch/opensearch.yml config/opensearch/docker-entrypoint.sh; do
   [[ -f "$extracted/$required" && ! -L "$extracted/$required" ]] ||
     die "release is missing regular file: $required"
 done
+
+open_release_leaf() {
+  local relative=$1
+  local output_variable=$2
+  local source=$extracted/$relative
+  local source_identity
+  source_identity=$(stat -Lc '%d:%i' -- "$source")
+  local leaf_fd
+  exec {leaf_fd}<"$source"
+  local held=/proc/self/fd/$leaf_fd
+  [[ -f "$held" && "$(stat -Lc '%d:%i' -- "$held")" == "$source_identity" ]] ||
+    die "could not hold verified release file: $relative"
+  printf -v "$output_variable" '%s' "$leaf_fd"
+}
+
+open_release_leaf scripts/remote/compose.sh compose_script_fd
+open_release_leaf scripts/remote/health.sh health_script_fd
+open_release_leaf compose.yaml compose_file_fd
+open_release_leaf versions.env versions_env_fd
+open_release_leaf config/opensearch/opensearch.yml opensearch_config_fd
+open_release_leaf config/opensearch/docker-entrypoint.sh opensearch_entrypoint_fd
 (umask 077; printf '%s\n' "$actual_digest" >"$extracted/.release-digest")
 
 release_dir=$releases_path/$release_name
@@ -211,14 +236,40 @@ if [[ -e "$release_dir" || -L "$release_dir" ]]; then
     [[ "$(realpath -m -- "$root_path/current")" == "$(realpath -e -- "$release_dir")" ]]; then
     die "current release collision is preserved and cannot be replaced"
   fi
-  retained_backup=$staging/retained-release
-  "$move_bin" -T -- "$release_dir" "$retained_backup"
-  if ! "$move_bin" -T -- "$extracted" "$release_dir"; then
-    if [[ ! -e "$release_dir" && -d "$retained_backup" ]]; then
-      "$move_bin" -T -- "$retained_backup" "$release_dir" || true
-    fi
-    die "could not atomically install the freshly verified retry"
+  retained_identity=$(stat -Lc '%d:%i' -- "$release_dir")
+  fresh_identity=$(stat -Lc '%d:%i' -- "$extracted")
+  if ! "$python_bin" -c '
+import ctypes
+import os
+import sys
+
+AT_FDCWD = -100
+RENAME_EXCHANGE = 2
+try:
+    renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    renameat2.argtypes = (
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        AT_FDCWD, os.fsencode(sys.argv[1]),
+        AT_FDCWD, os.fsencode(sys.argv[2]),
+        RENAME_EXCHANGE,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+except (AttributeError, OSError) as error:
+    print(f"atomic release exchange unavailable: {error}", file=sys.stderr)
+    raise SystemExit(1)
+' "$release_dir" "$extracted"; then
+    die "could not atomically exchange the retained release"
   fi
+  [[ "$(stat -Lc '%d:%i' -- "$release_dir")" == "$fresh_identity" ]] ||
+    die "atomic exchange did not install the freshly verified release"
+  [[ "$(stat -Lc '%d:%i' -- "$extracted")" == "$retained_identity" ]] ||
+    die "atomic exchange did not preserve the displaced retained release"
+  rm -rf -- "$extracted"
 else
   "$move_bin" -T -- "$extracted" "$release_dir"
 fi
@@ -251,8 +302,13 @@ export STACK_ROOT=$root
 export STACK_RELEASE_DIR=$release_host
 export STACK_RELEASE_HELD_DIR=$release_held
 export STACK_RUNTIME_ENV_FILE=$staged_runtime_env
-compose_script=$release_held/scripts/remote/compose.sh
-health_script=$release_held/scripts/remote/health.sh
+export STACK_VERSIONS_ENV_FILE=/proc/self/fd/$versions_env_fd
+export STACK_COMPOSE_FILE=/proc/self/fd/$compose_file_fd
+export STACK_OPENSEARCH_CONFIG_FILE=/proc/self/fd/$opensearch_config_fd
+export STACK_OPENSEARCH_ENTRYPOINT_FILE=/proc/self/fd/$opensearch_entrypoint_fd
+compose_script=/proc/self/fd/$compose_script_fd
+health_script=/proc/self/fd/$health_script_fd
+export STACK_COMPOSE_SCRIPT=$compose_script
 verify_release_identity
 bash "$compose_script" "${profiles[@]}" -- config --quiet
 verify_release_identity

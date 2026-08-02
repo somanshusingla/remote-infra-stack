@@ -1,3 +1,4 @@
+import base64
 import os
 import shutil
 import subprocess
@@ -21,26 +22,65 @@ class SearchComposeTests(unittest.TestCase):
         self.assertEqual(["opensearch"], list(dashboards["depends_on"]))
         self.assertEqual(-1, search["ulimits"]["memlock"]["soft"])
 
-    def test_search_mounts_sources_without_shadowing_runtime_config(self):
+    def test_search_transports_verified_sources_without_host_bind_mounts(self):
         model = render_compose("search")
         search = model["services"]["opensearch"]
         mounts = {mount["target"]: mount for mount in search["volumes"]}
 
-        self.assertEqual(
-            ["/usr/local/bin/remote-infra-stack-opensearch-entrypoint"], search["entrypoint"]
-        )
-        self.assertTrue(
-            mounts["/usr/share/opensearch/config-template/opensearch.yml"]["read_only"]
-        )
-        self.assertTrue(
-            mounts["/usr/local/bin/remote-infra-stack-opensearch-entrypoint"]["read_only"]
-        )
+        self.assertNotIn("/usr/share/opensearch/config-template/opensearch.yml", mounts)
+        self.assertNotIn("/usr/local/bin/remote-infra-stack-opensearch-entrypoint", mounts)
         self.assertNotIn("/usr/share/opensearch/config/opensearch.yml", mounts)
+        self.assertEqual("/bin/bash", search["entrypoint"][0])
+        self.assertEqual(
+            repo_path("config/opensearch/opensearch.yml").read_bytes(),
+            base64.b64decode(search["environment"]["REMOTE_INFRA_OPENSEARCH_CONFIG_B64"]),
+        )
+        self.assertEqual(
+            repo_path("config/opensearch/docker-entrypoint.sh").read_bytes(),
+            base64.b64decode(search["environment"]["REMOTE_INFRA_OPENSEARCH_ENTRYPOINT_B64"]),
+        )
 
     def test_search_wrapper_delegates_to_opensearch_command(self):
         model = render_compose("search")
 
         self.assertEqual(["opensearch"], model["services"]["opensearch"].get("command"))
+
+    def test_search_entrypoint_executes_exact_encoded_wrapper_with_arguments(self):
+        shell = OpenSearchEntrypointTests.bash()
+        if not shell:
+            self.skipTest("Bash is not available")
+        model = render_compose("search")
+        # `docker compose config` preserves the Compose escape as `$$`; the
+        # runtime command receives the documented literal single dollar.
+        entrypoint = [
+            value.replace("$$", "$")
+            for value in model["services"]["opensearch"]["entrypoint"]
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            arguments_log = Path(directory) / "arguments.log"
+            literal_log = Path(directory) / "literal.log"
+            wrapper = (
+                "#!/usr/bin/env bash\n"
+                "printf '<%s>' \"$@\" >\"$ENTRYPOINT_ARGUMENTS_LOG\"\n"
+                "printf '%s' \"$ENTRYPOINT_LITERAL\" >\"$ENTRYPOINT_LITERAL_LOG\"\n"
+            )
+            literal = "$HOME;$(touch must-not-execute);'\""
+            environment = os.environ | {
+                "REMOTE_INFRA_OPENSEARCH_ENTRYPOINT_B64": base64.b64encode(
+                    wrapper.encode("utf-8")
+                ).decode("ascii"),
+                "ENTRYPOINT_ARGUMENTS_LOG": str(arguments_log),
+                "ENTRYPOINT_LITERAL_LOG": str(literal_log),
+                "ENTRYPOINT_LITERAL": literal,
+            }
+            result = subprocess.run(
+                [shell, *entrypoint[1:], "opensearch", "two words"],
+                env=environment, capture_output=True, text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("<opensearch><two words>", arguments_log.read_text())
+            self.assertEqual(literal, literal_log.read_text())
 
 
 class OpenSearchEntrypointTests(unittest.TestCase):
@@ -63,12 +103,11 @@ class OpenSearchEntrypointTests(unittest.TestCase):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
         root = Path(temporary_directory.name)
-        template = root / "opensearch.yml"
         runtime_config = root / "runtime" / "opensearch.yml"
         delegated_config = root / "delegated-config.yml"
         delegated_arguments = root / "delegated-arguments.txt"
         delegate = root / "delegate.sh"
-        template.write_text("cluster.name: copied-template\n", encoding="utf-8")
+        config_content = "cluster.name: 'quoted value'\nliteral: '$HOME;$(touch forbidden)'\n"
         runtime_config.parent.mkdir()
         delegate.write_text(
             "#!/usr/bin/env bash\n"
@@ -79,7 +118,9 @@ class OpenSearchEntrypointTests(unittest.TestCase):
         )
         delegate.chmod(delegate.stat().st_mode | 0o100)
         environment = os.environ | {
-            "OPENSEARCH_CONFIG_TEMPLATE": str(template),
+            "REMOTE_INFRA_OPENSEARCH_CONFIG_B64": base64.b64encode(
+                config_content.encode("utf-8")
+            ).decode("ascii"),
             "OPENSEARCH_CONFIG_PATH": str(runtime_config),
             "OPENSEARCH_DOCKER_ENTRYPOINT": str(delegate),
             "DELEGATED_CONFIG": str(delegated_config),
@@ -92,19 +133,19 @@ class OpenSearchEntrypointTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        return result, delegated_config, delegated_arguments
+        return result, delegated_config, delegated_arguments, config_content
 
     def test_wrapper_copies_template_and_delegates_original_arguments(self):
-        result, delegated_config, delegated_arguments = self.run_wrapper(0)
+        result, delegated_config, delegated_arguments, config_content = self.run_wrapper(0)
 
         self.assertEqual(0, result.returncode, f"stdout: {result.stdout}\nstderr: {result.stderr}")
-        self.assertEqual("cluster.name: copied-template\n", delegated_config.read_text(encoding="utf-8"))
+        self.assertEqual(config_content, delegated_config.read_text(encoding="utf-8"))
         self.assertEqual(
             "<-Ecluster.name=runtime><--flag=two words>",
             delegated_arguments.read_text(encoding="utf-8"),
         )
 
     def test_wrapper_propagates_delegate_failure(self):
-        result, _, _ = self.run_wrapper(23)
+        result, _, _, _ = self.run_wrapper(23)
 
         self.assertEqual(23, result.returncode, f"stdout: {result.stdout}\nstderr: {result.stderr}")

@@ -10,7 +10,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
 runtime_env=${STACK_RUNTIME_ENV_FILE:-$stack_root/runtime/.env}
-compose_script=$script_dir/compose.sh
+compose_script=${STACK_COMPOSE_SCRIPT:-$script_dir/compose.sh}
 curl_bin=${CURL_BIN:-curl}
 
 (($# > 0)) || die "usage: health.sh profile..."
