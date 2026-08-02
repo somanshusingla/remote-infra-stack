@@ -145,9 +145,20 @@ class ObservabilityComposeTests(unittest.TestCase):
         redis_command = " ".join(services["langfuse-redis"]["command"])
         self.assertIn("--maxmemory-policy noeviction", redis_command)
         self.assertIn("--requirepass", redis_command)
+
+    def test_minio_initializes_langfuse_bucket_before_starting_server(self):
+        minio = self.model["services"]["minio"]
+        startup = " ".join(minio["command"])
+
+        self.assertIn("mkdir -p /data/langfuse", startup)
+        self.assertRegex(
+            startup,
+            r'mkdir -p /data/langfuse\s*&&\s*(?:exec )?minio server '
+            r'--address ":9000" --console-address ":9001" /data',
+        )
         self.assertEqual(
-            ["server", "--address", ":9000", "--console-address", ":9001", "/data"],
-            services["minio"]["command"],
+            ["sh", "-c"],
+            minio.get("entrypoint"),
         )
 
     def test_images_restarts_health_checks_and_memory_limits_are_explicit(self):
