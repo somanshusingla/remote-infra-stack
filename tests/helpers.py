@@ -19,6 +19,10 @@ def read_env(path: Path) -> dict[str, str]:
     return values
 
 
+def read_env_keys(path: Path) -> list[str]:
+    return list(read_env(path))
+
+
 def validate_fixture_contracts(stack_fixture: Path, remote_fixture: Path) -> None:
     stack = read_env(stack_fixture)
     remote = read_env(remote_fixture)
