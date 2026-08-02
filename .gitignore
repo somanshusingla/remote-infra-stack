@@ -1,1 +1,8 @@
 .worktrees/
+.env
+remote.env
+.artifacts/
+*.tar.gz
+*.sha256
+__pycache__/
+*.pyc
