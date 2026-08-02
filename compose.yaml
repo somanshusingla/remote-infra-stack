@@ -270,6 +270,56 @@ services:
     mem_limit: ${LANGFUSE_WEB_MEMORY:-2g}
     networks: [infra]
 
+  pgadmin:
+    profiles: [tools]
+    image: ${PGADMIN_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?set in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?set in .env}
+      PGADMIN_LISTEN_PORT: "5050"
+    ports:
+      - "127.0.0.1:5050:5050"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5050/misc/ping >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: ${PGADMIN_MEMORY:-512m}
+    networks: [infra]
+
+  redisinsight:
+    profiles: [tools]
+    image: ${REDISINSIGHT_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      RI_APP_PORT: "5540"
+      RI_ENCRYPTION_KEY: ${REDISINSIGHT_ENCRYPTION_KEY:?set in .env}
+      RI_REDIS_HOST: app-redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_PASSWORD: ${APP_REDIS_PASSWORD:?set in .env}
+    ports:
+      - "127.0.0.1:5540:5540"
+    volumes:
+      - redisinsight_data:/data
+    depends_on:
+      app-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5540/api/health/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: ${REDISINSIGHT_MEMORY:-512m}
+    networks: [infra]
+
 networks:
   infra:
     name: remote-infra-stack-infra
@@ -293,3 +343,7 @@ volumes:
     name: remote-infra-stack-clickhouse-logs
   minio_data:
     name: remote-infra-stack-minio-data
+  pgadmin_data:
+    name: remote-infra-stack-pgadmin-data
+  redisinsight_data:
+    name: remote-infra-stack-redisinsight-data
