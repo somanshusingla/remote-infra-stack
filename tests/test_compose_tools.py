@@ -9,6 +9,7 @@ class ToolComposeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = render_compose("core", "tools")
         cls.fixture = read_env(repo_path("tests/fixtures/stack.env"))
+        cls.versions = read_env(repo_path("versions.env"))
 
     def test_tools_join_core_databases(self):
         self.assertEqual(
@@ -26,13 +27,13 @@ class ToolComposeTests(unittest.TestCase):
         services = self.model["services"]
         expected = {
             "pgadmin": {
-                "image": "docker.io/dpage/pgadmin4:9.16",
+                "image": self.versions["PGADMIN_IMAGE"],
                 "port": ("127.0.0.1", 5050, 5050),
                 "volume": ("pgadmin_data", "/var/lib/pgadmin"),
                 "memory": 512 * 1024**2,
             },
             "redisinsight": {
-                "image": "docker.io/redis/redisinsight:3.4.2",
+                "image": self.versions["REDISINSIGHT_IMAGE"],
                 "port": ("127.0.0.1", 5540, 5540),
                 "volume": ("redisinsight_data", "/data"),
                 "memory": 512 * 1024**2,

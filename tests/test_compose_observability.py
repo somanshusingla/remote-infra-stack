@@ -18,6 +18,7 @@ class ObservabilityComposeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = render_compose("observability")
         cls.fixture = read_env(repo_path("tests/fixtures/stack.env"))
+        cls.versions = read_env(repo_path("versions.env"))
 
     def test_observability_topology_is_complete_and_isolated(self):
         self.assertEqual(self.expected, set(self.model["services"]))
@@ -164,12 +165,12 @@ class ObservabilityComposeTests(unittest.TestCase):
     def test_images_restarts_health_checks_and_memory_limits_are_explicit(self):
         services = self.model["services"]
         expected_images = {
-            "langfuse-web": "docker.io/langfuse/langfuse:3.176.0",
-            "langfuse-worker": "docker.io/langfuse/langfuse-worker:3.176.0",
-            "langfuse-postgres": "docker.io/postgres:17.10-bookworm",
-            "langfuse-redis": "docker.io/redis:7.4.3-bookworm",
-            "clickhouse": "docker.io/clickhouse/clickhouse-server:25.12",
-            "minio": "docker.io/minio/minio:RELEASE.2025-06-13T11-33-47Z",
+            "langfuse-web": self.versions["LANGFUSE_WEB_IMAGE"],
+            "langfuse-worker": self.versions["LANGFUSE_WORKER_IMAGE"],
+            "langfuse-postgres": self.versions["LANGFUSE_POSTGRES_IMAGE"],
+            "langfuse-redis": self.versions["LANGFUSE_REDIS_IMAGE"],
+            "clickhouse": self.versions["CLICKHOUSE_IMAGE"],
+            "minio": self.versions["MINIO_IMAGE"],
         }
         expected_memory = {
             "langfuse-web": 2 * 1024**3,
