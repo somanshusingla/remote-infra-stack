@@ -38,7 +38,7 @@ services:
     ports:
       - "127.0.0.1:15432:5432"
     volumes:
-      - app_postgres_data:/var/lib/postgresql/data
+      - app_postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -78,7 +78,7 @@ services:
     volumes:
       - chroma_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v2/heartbeat >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "exec bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8000'"]
       interval: 10s
       timeout: 5s
       retries: 12

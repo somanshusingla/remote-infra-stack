@@ -15,6 +15,7 @@ class CoreVectorComposeTests(unittest.TestCase):
         self.assertIn("healthcheck", postgres)
         self.assertIn("healthcheck", redis)
         self.assertEqual("app_postgres_data", postgres["volumes"][0]["source"])
+        self.assertEqual("/var/lib/postgresql", postgres["volumes"][0]["target"])
         self.assertEqual("app_redis_data", redis["volumes"][0]["source"])
         self.assertEqual(
             "remote-infra-stack-app-postgres-data", model["volumes"]["app_postgres_data"]["name"]
@@ -31,5 +32,8 @@ class CoreVectorComposeTests(unittest.TestCase):
         self.assertEqual(8000, int(chroma["ports"][0]["target"]))
         self.assertEqual("/data", chroma["environment"]["CHROMA_PERSIST_PATH"])
         self.assertIn("healthcheck", chroma)
+        health_command = chroma["healthcheck"]["test"][1]
+        self.assertIn("/dev/tcp/127.0.0.1/8000", health_command)
+        self.assertNotIn("wget", health_command)
         self.assertEqual("chroma_data", chroma["volumes"][0]["source"])
         self.assertEqual("remote-infra-stack-chroma-data", model["volumes"]["chroma_data"]["name"])
