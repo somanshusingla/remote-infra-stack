@@ -1,4 +1,7 @@
+import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -6,6 +9,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def repo_path(relative: str) -> Path:
     return REPO_ROOT / relative
+
+
+def render_compose(*profiles: str) -> dict:
+    command = [
+        "docker", "compose",
+        "--env-file", str(repo_path("versions.env")),
+        "--env-file", str(repo_path("tests/fixtures/stack.env")),
+    ]
+    for profile in profiles:
+        command.extend(["--profile", profile])
+    command.extend(["config", "--format", "json"])
+    result = subprocess.run(command, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
 
 
 def read_env(path: Path) -> dict[str, str]:

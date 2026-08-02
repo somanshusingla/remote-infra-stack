@@ -1,1 +1,74 @@
 name: remote-infra-stack
+
+services:
+  app-postgres:
+    profiles: [core]
+    image: ${APP_POSTGRES_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${APP_POSTGRES_USER:?set in .env}
+      POSTGRES_DB: ${APP_POSTGRES_DB:?set in .env}
+      POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:?set in .env}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - app_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${APP_POSTGRES_MEMORY:-1g}
+    networks: [infra]
+
+  app-redis:
+    profiles: [core]
+    image: ${APP_REDIS_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      APP_REDIS_PASSWORD: ${APP_REDIS_PASSWORD:?set in .env}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory-policy noeviction --requirepass \"$$APP_REDIS_PASSWORD\""]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - app_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$APP_REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${APP_REDIS_MEMORY:-512m}
+    networks: [infra]
+
+  chroma:
+    profiles: [vector]
+    image: ${CHROMA_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      CHROMA_PERSIST_PATH: /data
+      CHROMA_ALLOW_RESET: "false"
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - chroma_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v2/heartbeat >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${CHROMA_MEMORY:-4g}
+    networks: [infra]
+
+networks:
+  infra:
+    name: remote-infra-stack-infra
+
+volumes:
+  app_postgres_data:
+    name: remote-infra-stack-app-postgres-data
+  app_redis_data:
+    name: remote-infra-stack-app-redis-data
+  chroma_data:
+    name: remote-infra-stack-chroma-data
