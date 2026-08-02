@@ -72,6 +72,8 @@ class ObservabilityComposeTests(unittest.TestCase):
         self.assertTrue(database_url.password == self.fixture["LANGFUSE_POSTGRES_PASSWORD"])
         self.assertEqual("http://clickhouse:8123", worker["CLICKHOUSE_URL"])
         self.assertEqual("clickhouse://clickhouse:9000", worker["CLICKHOUSE_MIGRATION_URL"])
+        self.assertEqual("false", worker["CLICKHOUSE_CLUSTER_ENABLED"])
+        self.assertEqual("false", web["CLICKHOUSE_CLUSTER_ENABLED"])
         self.assertEqual("langfuse-redis", worker["REDIS_HOST"])
         self.assertEqual("6379", worker["REDIS_PORT"])
         self.assertEqual("http://minio:9000", worker["LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT"])
