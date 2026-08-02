@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${STACK_REAL_GIT:?STACK_REAL_GIT is required}"
+if [[ -n "${STACK_GIT_LOG:-}" ]]; then
+  {
+    printf 'git\0'
+    printf '%s\0' "$@"
+    printf '\n'
+  } >>"$STACK_GIT_LOG"
+fi
+
+"$STACK_REAL_GIT" "$@"
+status=$?
+((status == 0)) || exit "$status"
+
+is_archive=false
+for argument in "$@"; do
+  [[ "$argument" != archive ]] || is_archive=true
+done
+if [[ "$is_archive" == true && -n "${STACK_GIT_MUTATION:-}" && ! -e "${STACK_GIT_MUTATION_MARKER:-}" ]]; then
+  : >"$STACK_GIT_MUTATION_MARKER"
+  case "$STACK_GIT_MUTATION" in
+    move-head)
+      printf 'moved HEAD\n' >>"$STACK_GIT_REPO/committed.txt"
+      "$STACK_REAL_GIT" -C "$STACK_GIT_REPO" add committed.txt
+      "$STACK_REAL_GIT" -C "$STACK_GIT_REPO" commit -m 'move head during deploy' >/dev/null
+      ;;
+    edit-receiver)
+      printf '\nprintf "MUTATED RECEIVER\\n" >&2\n' >>"$STACK_GIT_REPO/scripts/remote/deploy-release.sh"
+      ;;
+    edit-env)
+      printf '\nMUTATED_DURING_ARCHIVE=yes\n' >>"$STACK_GIT_REPO/.env"
+      ;;
+    *)
+      printf 'unknown STACK_GIT_MUTATION: %s\n' "$STACK_GIT_MUTATION" >&2
+      exit 97
+      ;;
+  esac
+fi

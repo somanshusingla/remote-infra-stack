@@ -74,12 +74,17 @@ load_remote_env() {
   done
 
   [[ -n "$REMOTE_HOST" ]] || common_die "REMOTE_HOST is required"
-  [[ "$REMOTE_HOST" =~ ^[A-Za-z0-9_.:-]+$ ]] ||
+  [[ "$REMOTE_HOST" != -* ]] || common_die "REMOTE_HOST must not begin with an option prefix"
+  [[ "$REMOTE_HOST" != *:* ]] || common_die "REMOTE_HOST must not contain a colon; IPv6 targets are unsupported"
+  [[ "$REMOTE_HOST" =~ ^[A-Za-z0-9_.-]+$ ]] ||
     common_die "REMOTE_HOST contains unsupported characters"
+  [[ "$REMOTE_USER" != -* ]] || common_die "REMOTE_USER must not begin with an option prefix"
   [[ -z "$REMOTE_USER" || "$REMOTE_USER" =~ ^[A-Za-z0-9_.-]+$ ]] ||
     common_die "REMOTE_USER contains unsupported characters"
-  [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || common_die "REMOTE_PORT must be an integer"
-  ((REMOTE_PORT >= 1 && REMOTE_PORT <= 65535)) || common_die "REMOTE_PORT must be between 1 and 65535"
+  if [[ -n "$REMOTE_PORT" ]]; then
+    [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || common_die "REMOTE_PORT must be an integer"
+    ((REMOTE_PORT >= 1 && REMOTE_PORT <= 65535)) || common_die "REMOTE_PORT must be between 1 and 65535"
+  fi
   [[ -n "$REMOTE_ROOT" && "$REMOTE_ROOT" != /* && "$REMOTE_ROOT" != ~* && ! "$REMOTE_ROOT" =~ ^[A-Za-z]: ]] ||
     common_die "REMOTE_ROOT must be a relative REMOTE_ROOT path"
   [[ ! "$REMOTE_ROOT" =~ (^|/)\.\.(/|$) ]] || common_die "REMOTE_ROOT must not contain .. path components"
@@ -91,12 +96,62 @@ load_remote_env() {
   else
     ssh_target=$REMOTE_HOST
   fi
-  ssh_args=(-p "$REMOTE_PORT")
-  scp_args=(-P "$REMOTE_PORT")
+  ssh_args=()
+  scp_args=()
+  if [[ -n "$REMOTE_PORT" ]]; then
+    ssh_args=(-p "$REMOTE_PORT")
+    scp_args=(-P "$REMOTE_PORT")
+  fi
   if [[ -n "$REMOTE_IDENTITY_FILE" ]]; then
     ssh_args+=(-i "$REMOTE_IDENTITY_FILE")
     scp_args+=(-i "$REMOTE_IDENTITY_FILE")
   fi
+}
+
+posix_quote() {
+  local value=$1 output="'" character
+  while [[ -n "$value" ]]; do
+    character=${value%"${value#?}"}
+    value=${value#?}
+    if [[ "$character" == "'" ]]; then
+      output+="'"
+      output+='\'
+      output+="'"
+      output+="'"
+    else
+      output+=$character
+    fi
+  done
+  output+="'"
+  printf '%s' "$output"
+}
+
+build_remote_command() {
+  (($# > 0)) || common_die "remote command must not be empty"
+  remote_command=
+  local argument encoded
+  for argument in "$@"; do
+    encoded=$(posix_quote "$argument")
+    [[ -z "$remote_command" ]] || remote_command+=' '
+    remote_command+=$encoded
+  done
+}
+
+run_ssh() {
+  build_remote_command "$@"
+  ssh "${ssh_args[@]}" -- "$ssh_target" "$remote_command"
+}
+
+base64_file_no_wrap() {
+  local source=$1 encoded
+  if encoded=$(base64 --wrap=0 <"$source" 2>/dev/null); then
+    :
+  else
+    encoded=$(base64 <"$source" | tr -d '\r\n') || common_die "base64 encoding failed: $source"
+  fi
+  [[ "$encoded" != *$'\n'* && "$encoded" != *$'\r'* ]] ||
+    common_die "base64 output unexpectedly contains line breaks: $source"
+  printf '%s' "$encoded"
 }
 
 validate_profiles() {
@@ -128,6 +183,20 @@ require_clean_git_head() {
   git -C "$repository" diff --cached --quiet -- || common_die "operation requires a clean committed Git HEAD"
   [[ -z "$(git -C "$repository" status --porcelain --untracked-files=normal)" ]] ||
     common_die "operation requires a clean committed Git HEAD"
+}
+
+reject_tracked_file() {
+  local repository=$1 file=$2 label=$3 parent canonical relative
+  parent=$(cd -- "$(dirname -- "$file")" && pwd -P) || common_die "cannot resolve $label parent"
+  canonical=$parent/$(basename -- "$file")
+  case "$canonical" in
+    "$repository"/*)
+      relative=${canonical#"$repository"/}
+      if [[ -n "$(git -C "$repository" ls-files -- "$relative")" ]]; then
+        common_die "$label must not be tracked by Git"
+      fi
+      ;;
+  esac
 }
 
 validate_stack_env() {

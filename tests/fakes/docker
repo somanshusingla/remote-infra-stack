@@ -10,6 +10,9 @@ if [[ -n "${STACK_DOCKER_LOG:-}" ]]; then
 fi
 
 joined=" $* "
+if [[ -n "${STACK_FAKE_REQUIRE_OPENSEARCH_B64:-}" && "$joined" == *" config "* ]]; then
+  [[ -n "${STACK_OPENSEARCH_CONFIG_B64:-}" && -n "${STACK_OPENSEARCH_ENTRYPOINT_B64:-}" ]] || exit 61
+fi
 project_directory=
 compose_file=
 versions_file=

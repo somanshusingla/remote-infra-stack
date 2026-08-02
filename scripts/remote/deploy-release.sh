@@ -9,10 +9,11 @@ die() {
 root=
 archive=
 checksum=
+runtime_env=
 profiles_csv=
 while (($#)); do
   case "$1" in
-    --root|--archive|--checksum|--profiles)
+    --root|--archive|--checksum|--env|--profiles)
       (($# >= 2)) || die "missing value for $1"
       option=$1
       value=$2
@@ -21,14 +22,15 @@ while (($#)); do
         --root) [[ -z "$root" ]] || die "duplicate option: --root"; root=$value ;;
         --archive) [[ -z "$archive" ]] || die "duplicate option: --archive"; archive=$value ;;
         --checksum) [[ -z "$checksum" ]] || die "duplicate option: --checksum"; checksum=$value ;;
+        --env) [[ -z "$runtime_env" ]] || die "duplicate option: --env"; runtime_env=$value ;;
         --profiles) [[ -z "$profiles_csv" ]] || die "duplicate option: --profiles"; profiles_csv=$value ;;
       esac
       ;;
     *) die "unknown argument: $1" ;;
   esac
 done
-[[ -n "$root" && -n "$archive" && -n "$checksum" && -n "$profiles_csv" ]] ||
-  die "usage: deploy-release.sh --root PATH --archive PATH --checksum PATH --profiles CSV"
+[[ -n "$root" && -n "$archive" && -n "$checksum" && -n "$runtime_env" && -n "$profiles_csv" ]] ||
+  die "usage: deploy-release.sh --root PATH --archive PATH --checksum PATH --env PATH --profiles CSV"
 
 IFS=, read -r -a profiles <<<"$profiles_csv"
 ((${#profiles[@]} > 0)) || die "at least one profile is required"
@@ -74,12 +76,16 @@ open_root_child() {
 
 open_root_child runtime runtime_fd
 open_root_child releases releases_fd
+open_root_child incoming incoming_fd
 runtime_path=/proc/self/fd/$runtime_fd
 releases_path=/proc/self/fd/$releases_fd
+incoming_path=/proc/self/fd/$incoming_fd
 runtime_host=$(realpath -e -- "$runtime_path")
 releases_host=$(realpath -e -- "$releases_path")
+incoming_host=$(realpath -e -- "$incoming_path")
 [[ "$runtime_host" == "$root/"* ]] || die "held runtime directory escaped the stack root"
 [[ "$releases_host" == "$root/"* ]] || die "held releases directory escaped the stack root"
+[[ "$incoming_host" == "$root/"* ]] || die "held incoming directory escaped the stack root"
 
 # The validated runtime directory itself is the lock object. This cannot follow or
 # truncate a caller-controlled deploy.lock path and the descriptor remains open
@@ -87,30 +93,46 @@ releases_host=$(realpath -e -- "$releases_path")
 flock -n "$runtime_fd" || die "another deployment is already in progress"
 
 runtime_env_entry=$runtime_path/.env
-[[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
-  die "runtime/.env must be a regular non-symlink file"
-runtime_env_host=$(realpath -e -- "$runtime_env_entry")
-[[ "$runtime_env_host" == "$runtime_host/.env" ]] ||
-  die "runtime/.env escaped the held runtime directory"
-exec {runtime_env_fd}<"$runtime_env_entry"
-runtime_env_held=/proc/self/fd/$runtime_env_fd
-[[ -f "$runtime_env_held" && "$(realpath -e -- "$runtime_env_held")" == "$runtime_env_host" ]] ||
-  die "could not hold the validated runtime environment"
-chmod 0600 -- "$runtime_env_held"
+if [[ -e "$runtime_env_entry" || -L "$runtime_env_entry" ]]; then
+  [[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
+    die "runtime/.env must be absent or a regular non-symlink file"
+fi
 
-inside_root() {
-  local candidate=$1
-  [[ "$candidate" == "$root" || "$candidate" == "$root/"* ]]
+hold_incoming_file() {
+  local label=$1 source=$2 fd_variable=$3 name_variable=$4
+  [[ -f "$source" && ! -L "$source" ]] ||
+    die "$label must be a regular non-symlink file in incoming"
+  local source_real source_parent source_name source_identity held_fd held_path
+  source_real=$(realpath -e -- "$source")
+  source_parent=$(dirname -- "$source_real")
+  [[ "$source_parent" == "$incoming_host" ]] ||
+    die "$label path must be a direct child of incoming"
+  source_name=$(basename -- "$source_real")
+  [[ -n "$source_name" && "$source_name" != . && "$source_name" != .. && "$source_name" != *$'\n'* ]] ||
+    die "$label has an unsafe incoming name"
+  source_identity=$(stat -Lc '%d:%i' -- "$source_real")
+  exec {held_fd}<"$source_real"
+  held_path=/proc/self/fd/$held_fd
+  [[ -f "$held_path" && "$(stat -Lc '%d:%i' -- "$held_path")" == "$source_identity" ]] ||
+    die "could not hold incoming $label"
+  printf -v "$fd_variable" '%s' "$held_fd"
+  printf -v "$name_variable" '%s' "$source_name"
 }
 
-[[ -f "$archive" && ! -L "$archive" ]] || die "archive must be a regular non-symlink file"
-[[ -f "$checksum" && ! -L "$checksum" ]] || die "checksum must be a regular non-symlink file"
-archive=$(realpath -e -- "$archive")
-checksum=$(realpath -e -- "$checksum")
-inside_root "$archive" || die "archive path must remain below the stack root"
-inside_root "$checksum" || die "checksum path must remain below the stack root"
+hold_incoming_file archive "$archive" archive_fd archive_file
+hold_incoming_file checksum "$checksum" checksum_fd checksum_file
+hold_incoming_file environment "$runtime_env" runtime_env_fd runtime_env_file
+archive_held=/proc/self/fd/$archive_fd
+checksum_held=/proc/self/fd/$checksum_fd
+runtime_env_held=/proc/self/fd/$runtime_env_fd
+archive_identity=$(stat -Lc '%d:%i' -- "$archive_held")
+checksum_identity=$(stat -Lc '%d:%i' -- "$checksum_held")
+runtime_env_identity=$(stat -Lc '%d:%i' -- "$runtime_env_held")
+[[ "$archive_identity" != "$checksum_identity" &&
+   "$archive_identity" != "$runtime_env_identity" &&
+   "$checksum_identity" != "$runtime_env_identity" ]] ||
+  die "archive, checksum, and environment must be distinct incoming files"
 
-archive_file=$(basename -- "$archive")
 [[ "$archive_file" == *.tar.gz ]] || die "archive name must end in .tar.gz"
 release_name=${archive_file%.tar.gz}
 [[ -n "$release_name" && "$release_name" != . && "$release_name" != .. && "$release_name" != *$'\n'* ]] ||
@@ -119,12 +141,20 @@ release_name=${archive_file%.tar.gz}
 staging=$(mktemp -d "$runtime_path/.deploy-XXXXXXXX")
 chmod 0700 -- "$staging"
 current_temp=
+runtime_env_temp=
+incoming_env_cleanup=$incoming_path/$runtime_env_file
 cleanup() {
   if [[ -n "${staging:-}" && -d "$staging" ]]; then
     rm -rf -- "$staging"
   fi
   if [[ -n "${current_temp:-}" ]]; then
     rm -f -- "$current_temp"
+  fi
+  if [[ -n "${runtime_env_temp:-}" ]]; then
+    rm -f -- "$runtime_env_temp"
+  fi
+  if [[ -n "${incoming_env_cleanup:-}" ]]; then
+    rm -f -- "$incoming_env_cleanup"
   fi
 }
 trap cleanup EXIT
@@ -135,9 +165,11 @@ staged_archive=$staging/archive.tar.gz
 staged_checksum=$staging/archive.sha256
 staged_runtime_env=$staging/runtime.env
 "${CP_BIN:-cp}" -- "$runtime_env_held" "$staged_runtime_env"
-"${CP_BIN:-cp}" -- "$archive" "$staged_archive"
-"${CP_BIN:-cp}" -- "$checksum" "$staged_checksum"
+"${CP_BIN:-cp}" -- "$archive_held" "$staged_archive"
+"${CP_BIN:-cp}" -- "$checksum_held" "$staged_checksum"
 chmod 0600 -- "$staged_archive" "$staged_checksum" "$staged_runtime_env"
+rm -f -- "$incoming_env_cleanup"
+incoming_env_cleanup=
 
 mapfile -t checksum_lines <"$staged_checksum"
 ((${#checksum_lines[@]} == 1)) || die "checksum file must contain exactly one record"
@@ -297,6 +329,17 @@ verify_release_identity() {
   [[ "$host_identity" == "$release_identity" ]] ||
     die "canonical release path no longer names the held verified release"
 }
+
+# Install the exact lock-held snapshot as the durable runtime environment. The
+# Compose transaction continues to read the private snapshot so later pathname
+# replacement cannot mix this release with another deployment's environment.
+runtime_env_temp=$(mktemp "$runtime_path/.env.XXXXXXXX")
+"${CP_BIN:-cp}" -- "$staged_runtime_env" "$runtime_env_temp"
+chmod 0600 -- "$runtime_env_temp"
+mv -T -- "$runtime_env_temp" "$runtime_env_entry"
+runtime_env_temp=
+[[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
+  die "could not atomically install runtime/.env"
 
 export STACK_ROOT=$root
 export STACK_RELEASE_DIR=$release_host

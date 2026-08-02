@@ -22,9 +22,11 @@ class ReleaseLifecycleTests(unittest.TestCase):
         for child in ("incoming", "runtime", "releases"):
             (self.root / child).mkdir(parents=True, exist_ok=True)
         write_test_env(self.root / "runtime/.env")
+        self.env_counter = 0
         self.log = self.root / "docker.log"
         self.env = {
             **os.environ,
+            "PATH": f"{shell_path(repo_path('tests/fakes'))}{os.pathsep}{os.environ.get('PATH', '')}",
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
             "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
             "STACK_DOCKER_LOG": shell_path(self.log),
@@ -50,11 +52,24 @@ class ReleaseLifecycleTests(unittest.TestCase):
         checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
         return archive, checksum, name
 
-    def deploy(self, archive, checksum, profiles="core", **env):
+    def make_incoming_env(self, content=None):
+        self.env_counter += 1
+        incoming_env = self.root / "incoming" / f"runtime-env-{self.env_counter:04d}"
+        if content is None:
+            content = (self.root / "runtime/.env").read_bytes()
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        incoming_env.write_bytes(content)
+        return incoming_env
+
+    def deploy(self, archive, checksum, profiles="core", runtime_env=None, **env):
+        if runtime_env is None:
+            runtime_env = self.make_incoming_env()
         return subprocess.run([
             BASH_BIN, shell_path(repo_path("scripts/remote/deploy-release.sh")),
             "--root", shell_path(self.root), "--archive", shell_path(archive),
-            "--checksum", shell_path(checksum), "--profiles", profiles,
+            "--checksum", shell_path(checksum), "--env", shell_path(runtime_env),
+            "--profiles", profiles,
         ], env={**self.env, **env}, capture_output=True, text=True)
 
     def set_current(self, name):
@@ -149,12 +164,57 @@ class ReleaseLifecycleTests(unittest.TestCase):
     def test_checksum_mismatch_fails_before_extraction_or_docker(self):
         archive, checksum, name = self.make_archive()
         self.set_current("20260802T010000Z-current")
+        previous_env = (self.root / "runtime/.env").read_bytes()
+        incoming_env = self.make_incoming_env(previous_env + b"PAIR_MARKER=new\n")
         checksum.write_text(f"{'0' * 64}  {archive.name}\n", encoding="ascii")
-        result = self.deploy(archive, checksum)
+        result = self.deploy(archive, checksum, runtime_env=incoming_env)
         self.assertNotEqual(0, result.returncode)
         self.assertFalse((self.root / "releases" / name).exists())
         self.assertFalse(self.log.exists())
         self.assertEqual("releases/20260802T010000Z-current", os.readlink(self.root / "current"))
+        self.assertEqual(previous_env, (self.root / "runtime/.env").read_bytes())
+        self.assertFalse(incoming_env.exists())
+
+    def test_requires_direct_regular_incoming_environment(self):
+        archive, checksum, _ = self.make_archive("20260802T120100Z-env-input")
+        command = [
+            BASH_BIN, shell_path(repo_path("scripts/remote/deploy-release.sh")),
+            "--root", shell_path(self.root), "--archive", shell_path(archive),
+            "--checksum", shell_path(checksum), "--profiles", "core",
+        ]
+        missing = subprocess.run(
+            command, env=self.env, capture_output=True, text=True
+        )
+        self.assertNotEqual(0, missing.returncode)
+        self.assertIn("--env", missing.stderr)
+
+        outside = Path(self.temp.name) / "outside.env"
+        outside.write_bytes((self.root / "runtime/.env").read_bytes())
+        rejected = self.deploy(archive, checksum, runtime_env=outside)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("incoming", rejected.stderr.lower())
+        self.assertTrue(outside.exists())
+
+        target = self.make_incoming_env()
+        link = self.root / "incoming/runtime-env-link"
+        os.symlink(target.name, link)
+        rejected = self.deploy(archive, checksum, runtime_env=link)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("non-symlink", rejected.stderr.lower())
+        self.assertTrue(target.exists())
+
+    def test_success_installs_exact_incoming_environment_atomically(self):
+        archive, checksum, _ = self.make_archive("20260802T120200Z-env-install")
+        incoming = self.make_incoming_env(
+            (self.root / "runtime/.env").read_bytes() + b"PAIR_MARKER=exact\n"
+        )
+        expected = incoming.read_bytes()
+        result = self.deploy(archive, checksum, runtime_env=incoming)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(expected, (self.root / "runtime/.env").read_bytes())
+        self.assertEqual(0o600, (self.root / "runtime/.env").stat().st_mode & 0o777)
+        self.assertFalse(incoming.exists())
+        self.assert_private_runtime_env_used()
 
     def test_success_activates_atomically_and_prunes_only_old_successes(self):
         self.set_current("20260802T090000Z-oldcurrent")
@@ -240,15 +300,21 @@ class ReleaseLifecycleTests(unittest.TestCase):
         write_test_env(redirect_env)
         wrapper = self.make_env_swap_copy("leaf")
         archive, checksum, _ = self.make_archive("20260802T122000Z-env-leaf")
+        incoming_env = self.make_incoming_env(
+            (self.root / "runtime/.env").read_bytes() + b"PAIR_MARKER=held-leaf\n"
+        )
+        expected = incoming_env.read_bytes()
         result = self.deploy(
-            archive, checksum, "search", CP_BIN=shell_path(wrapper),
-            STACK_RUNTIME_DIR=shell_path(self.root / "runtime"),
-            STACK_RUNTIME_ENV=shell_path(self.root / "runtime/.env"),
+            archive, checksum, "search", runtime_env=incoming_env,
+            CP_BIN=shell_path(wrapper),
+            STACK_RUNTIME_DIR=shell_path(self.root / "incoming"),
+            STACK_RUNTIME_ENV=shell_path(incoming_env),
             STACK_REDIRECT_ENV=shell_path(redirect_env),
             STACK_SWAP_MARKER=shell_path(self.root / "leaf-swapped"),
         )
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertTrue((self.root / "runtime/.env").is_symlink())
+        self.assertEqual(expected, (self.root / "runtime/.env").read_bytes())
+        self.assertFalse((self.root / "runtime/.env").is_symlink())
         self.assert_private_runtime_env_used()
 
     def test_runtime_directory_swap_uses_held_private_snapshot(self):
@@ -256,16 +322,22 @@ class ReleaseLifecycleTests(unittest.TestCase):
         write_test_env(redirect_env)
         wrapper = self.make_env_swap_copy("directory")
         archive, checksum, _ = self.make_archive("20260802T123000Z-env-directory")
+        incoming_env = self.make_incoming_env(
+            (self.root / "runtime/.env").read_bytes() + b"PAIR_MARKER=held-directory\n"
+        )
+        expected = incoming_env.read_bytes()
         result = self.deploy(
-            archive, checksum, "search", CP_BIN=shell_path(wrapper),
-            STACK_RUNTIME_DIR=shell_path(self.root / "runtime"),
-            STACK_RUNTIME_ENV=shell_path(self.root / "runtime/.env"),
+            archive, checksum, "search", runtime_env=incoming_env,
+            CP_BIN=shell_path(wrapper),
+            STACK_RUNTIME_DIR=shell_path(self.root / "incoming"),
+            STACK_RUNTIME_ENV=shell_path(incoming_env),
             STACK_REDIRECT_ENV=shell_path(redirect_env),
             STACK_SWAP_MARKER=shell_path(self.root / "directory-swapped"),
         )
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertTrue((self.root / "runtime/.env").is_symlink())
-        self.assertTrue((self.root / "runtime.original/.env").is_file())
+        self.assertEqual(expected, (self.root / "runtime/.env").read_bytes())
+        self.assertFalse((self.root / "runtime/.env").is_symlink())
+        self.assertTrue((self.root / "incoming.original").is_dir())
         self.assert_private_runtime_env_used()
 
     def test_config_pull_up_and_health_failures_preserve_current_and_do_not_prune(self):
@@ -610,18 +682,27 @@ class ReleaseLifecycleTests(unittest.TestCase):
 
     def test_deployment_lock_rejects_a_concurrent_receiver(self):
         archive, checksum, _ = self.make_archive()
+        original = (self.root / "runtime/.env").read_bytes()
+        first_env = self.make_incoming_env(original + b"PAIR_MARKER=first\n")
+        second_env = self.make_incoming_env(original + b"PAIR_MARKER=second\n")
+        first_expected = first_env.read_bytes()
         first = subprocess.Popen([
             BASH_BIN, shell_path(repo_path("scripts/remote/deploy-release.sh")),
             "--root", shell_path(self.root), "--archive", shell_path(archive),
-            "--checksum", shell_path(checksum), "--profiles", "core",
+            "--checksum", shell_path(checksum), "--env", shell_path(first_env),
+            "--profiles", "core",
         ], env={**self.env, "STACK_FAKE_HOLD_SECONDS": "3"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             time.sleep(0.5)
-            second = self.deploy(archive, checksum)
+            second = self.deploy(archive, checksum, runtime_env=second_env)
             self.assertNotEqual(0, second.returncode)
             self.assertIn("deployment", second.stderr.lower())
         finally:
-            first.communicate(timeout=10)
+            first_stdout, first_stderr = first.communicate(timeout=10)
+        self.assertEqual(0, first.returncode, first_stderr or first_stdout)
+        self.assertEqual(first_expected, (self.root / "runtime/.env").read_bytes())
+        self.assertFalse(first_env.exists())
+        self.assertTrue(second_env.exists())
 
 
 if __name__ == "__main__":

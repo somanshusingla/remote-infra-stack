@@ -7,3 +7,36 @@ set -euo pipefail
   printf '%s\0' "$@"
   printf '\n'
 } >>"$STACK_FAKE_LOG"
+
+if [[ -n "${STACK_FAKE_REMOTE_LOG:-}" ]]; then
+  arguments=("$@")
+  index=0
+  while ((index < ${#arguments[@]})); do
+    case "${arguments[$index]}" in
+      -p|-i)
+        ((index += 2))
+        ;;
+      --)
+        ((index += 1))
+        break
+        ;;
+      -*)
+        ((index += 1))
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  target=${arguments[$index]:-}
+  ((index += 1))
+  remote_command=
+  while ((index < ${#arguments[@]})); do
+    [[ -z "$remote_command" ]] || remote_command+=' '
+    remote_command+=${arguments[$index]}
+    ((index += 1))
+  done
+  {
+    printf 'ssh-remote\0%s\0%s\0\n' "$target" "$remote_command"
+  } >>"$STACK_FAKE_REMOTE_LOG"
+fi

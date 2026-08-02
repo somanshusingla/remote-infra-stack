@@ -7,16 +7,35 @@ repo_root=$(cd -- "$script_dir/.." && pwd -P)
 source "$script_dir/lib/common.sh"
 
 load_remote_env "${STACK_REMOTE_ENV:-$repo_root/remote.env}"
-command -v ssh >/dev/null 2>&1 || common_die "required command is unavailable: ssh"
-command -v scp >/dev/null 2>&1 || common_die "required command is unavailable: scp"
+for command_name in ssh scp mktemp basename rmdir; do
+  command -v "$command_name" >/dev/null 2>&1 || common_die "required command is unavailable: $command_name"
+done
 
 bootstrap_source=$script_dir/remote/bootstrap-host.sh
 [[ -f "$bootstrap_source" ]] || common_die "remote bootstrap script is missing: $bootstrap_source"
-incoming_name="remote-infra-stack-bootstrap-$(date -u +%Y%m%dT%H%M%SZ)-$$.sh"
+token_directory=$(mktemp -d "${TMPDIR:-/tmp}/remote-infra-stack-bootstrap.XXXXXXXX") ||
+  common_die "could not create a unique bootstrap operation"
+operation_id=${token_directory##*.}
+remote_bootstrap=$REMOTE_ROOT/incoming/bootstrap-$operation_id.sh
+remote_cleanup=false
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ "$remote_cleanup" == true ]]; then
+    set +e
+    run_ssh rm -f -- "$remote_bootstrap" >/dev/null 2>&1
+    set -e
+  fi
+  rmdir -- "$token_directory" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT
 
-scp "${scp_args[@]}" "$bootstrap_source" "$ssh_target:$incoming_name"
-ssh "${ssh_args[@]}" "$ssh_target" sudo bash "$incoming_name" --install
-ssh "${ssh_args[@]}" "$ssh_target" mkdir -p \
-  "$REMOTE_ROOT/incoming" "$REMOTE_ROOT/releases" "$REMOTE_ROOT/runtime"
+run_ssh mkdir -p -- "$REMOTE_ROOT/incoming" "$REMOTE_ROOT/releases" "$REMOTE_ROOT/runtime"
+remote_cleanup=true
+scp "${scp_args[@]}" "$bootstrap_source" "$ssh_target:$remote_bootstrap"
+run_ssh sudo bash "$remote_bootstrap" --install
+run_ssh rm -f -- "$remote_bootstrap"
+remote_cleanup=false
 
 printf 'Remote host bootstrap completed for %s.\n' "$REMOTE_HOST"

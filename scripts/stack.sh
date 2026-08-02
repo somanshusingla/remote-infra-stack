@@ -21,6 +21,14 @@ case "$action" in
     ;;
   logs)
     (($# == 1)) || common_die "logs requires one profile or service target"
+    case "$1" in
+      core|vector|search|observability|tools|\
+        app-postgres|app-redis|chroma|opensearch|opensearch-dashboards|\
+        langfuse-postgres|langfuse-redis|clickhouse|minio|langfuse-worker|\
+        langfuse-web|pgadmin|redisinsight)
+        ;;
+      *) common_die "unknown log target: $1" ;;
+    esac
     ;;
   destroy)
     (($# == 0)) || common_die "destroy does not accept command-line confirmation tokens"
@@ -39,5 +47,4 @@ case "$action" in
     ;;
 esac
 
-ssh "${ssh_args[@]}" "$ssh_target" bash \
-  "$REMOTE_ROOT/current/scripts/remote/stack.sh" "$action" "$@"
+run_ssh bash "$REMOTE_ROOT/current/scripts/remote/stack.sh" "$action" "$@"
