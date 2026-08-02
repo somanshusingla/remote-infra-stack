@@ -10,6 +10,11 @@ from tests.helpers import render_compose, repo_path
 
 
 class SearchComposeTests(unittest.TestCase):
+    def test_search_config_leaves_tls_certificate_bootstrap_to_security_installer(self):
+        config = repo_path("config/opensearch/opensearch.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("plugins.security.ssl.http.enabled:", config)
+
     def test_search_keeps_security_and_host_limits(self):
         model = render_compose("search")
         search = model["services"]["opensearch"]
