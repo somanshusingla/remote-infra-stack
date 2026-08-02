@@ -190,12 +190,19 @@ class ObservabilityComposeTests(unittest.TestCase):
             self.assertEqual(expected_memory[service_name], int(service["mem_limit"]), service_name)
             self.assertIn("healthcheck", service, service_name)
 
+    def test_langfuse_health_checks_use_the_container_hostname(self):
+        services = self.model["services"]
+        for service_name in ("langfuse-web", "langfuse-worker"):
+            command = " ".join(services[service_name]["healthcheck"]["test"])
+            self.assertIn("process.env.HOSTNAME", command, service_name)
+            self.assertNotIn("127.0.0.1", command, service_name)
+
         self.assertEqual(
             [
                 "CMD",
                 "node",
                 "-e",
-                "fetch('http://127.0.0.1:3000/api/public/ready').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+                "fetch('http://' + process.env.HOSTNAME + ':3000/api/public/ready').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
             ],
             services["langfuse-web"]["healthcheck"]["test"],
         )
@@ -204,7 +211,7 @@ class ObservabilityComposeTests(unittest.TestCase):
                 "CMD",
                 "node",
                 "-e",
-                "fetch('http://127.0.0.1:3030/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+                "fetch('http://' + process.env.HOSTNAME + ':3030/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
             ],
             services["langfuse-worker"]["healthcheck"]["test"],
         )
