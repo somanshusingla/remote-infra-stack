@@ -578,6 +578,7 @@ git commit -m "feat: add core and vector profiles"
 **Files:**
 - Modify: `compose.yaml`
 - Create: `config/opensearch/opensearch.yml`
+- Create: `config/opensearch/docker-entrypoint.sh`
 - Create: `tests/test_compose_search.py`
 
 **Interfaces:**
@@ -624,7 +625,9 @@ network.host: 0.0.0.0
 plugins.security.ssl.http.enabled: true
 ```
 
-Add `opensearch` with `discovery.type=single-node`, `bootstrap.memory_lock=true`, `OPENSEARCH_JAVA_OPTS`, `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, loopback ports, named data volume, config read-only mount, memlock/nofile ulimits, 6 GiB container limit, and an authenticated `curl -k` health check.
+Create `config/opensearch/docker-entrypoint.sh`. The wrapper must copy the repository-owned `opensearch.yml` source template from a read-only non-runtime mount into `/usr/share/opensearch/config/opensearch.yml`, then `exec` the image's standard `/usr/share/opensearch/opensearch-docker-entrypoint.sh` with the original arguments. This keeps the repository source immutable while leaving the runtime file writable for the bundled development security initializer, which generates certificates and adds TLS/authentication settings.
+
+Add `opensearch` with `discovery.type=single-node`, `bootstrap.memory_lock=true`, `OPENSEARCH_JAVA_OPTS`, `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, loopback ports, named data volume, read-only source-template and wrapper mounts, the wrapper entrypoint, memlock/nofile ulimits, 6 GiB container limit, and an authenticated `curl -k` health check. Do not mount the source template directly over `/usr/share/opensearch/config/opensearch.yml`.
 
 ```yaml
     healthcheck:
@@ -637,7 +640,7 @@ Add `opensearch` with `discovery.type=single-node`, `bootstrap.memory_lock=true`
 
 - [ ] **Step 4: Add matching OpenSearch Dashboards**
 
-Use the matching image variable, depend on healthy OpenSearch, set `OPENSEARCH_HOSTS` to `https://opensearch:9200`, use the admin credentials, disable certificate verification only for the bundled development certificate, publish `127.0.0.1:5601:5601`, add a `/api/status` health check, and apply the 1 GiB limit.
+Use the matching image variable, depend on healthy OpenSearch, set `OPENSEARCH_HOSTS` to `https://opensearch:9200`, use the admin credentials, disable certificate verification only for the bundled development certificate, publish `127.0.0.1:5601:5601`, add a `/api/status` health check, and apply the 1 GiB limit. OpenSearch Dashboards is the Kibana-equivalent UI and must be reachable locally at `http://127.0.0.1:5601` through the `search` SSH tunnel.
 
 - [ ] **Step 5: Add and validate the named search volume**
 
@@ -650,7 +653,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit the search profile**
 
 ```bash
-git add compose.yaml config/opensearch/opensearch.yml tests/test_compose_search.py
+git add compose.yaml config/opensearch/opensearch.yml config/opensearch/docker-entrypoint.sh tests/test_compose_search.py
 git commit -m "feat: add secured search profile"
 ```
 

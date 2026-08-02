@@ -131,6 +131,8 @@ Langfuse project public and secret keys are created later through the Langfuse U
 - PostgreSQL uses a dedicated application role, database, and password.
 - Redis requires a password and uses the `noeviction` memory policy.
 - OpenSearch keeps its security plugin enabled and requires a strong initial administrator password.
+- OpenSearch mounts the repository configuration as a read-only source template at a non-runtime path. A repository-owned startup wrapper copies it into the image's writable runtime configuration before delegating to the standard entrypoint, allowing the bundled development security initializer to add TLS and authentication settings.
+- OpenSearch Dashboards is the Kibana-equivalent search UI and is reached locally at `http://127.0.0.1:5601` through the SSH tunnel.
 - Langfuse receives separate datastore credentials, salt, encryption key, and session secret.
 - pgAdmin requires a login, and RedisInsight receives an encryption key for stored connection details.
 - SSH keys are referenced through the user's SSH configuration and never copied into the repository.
