@@ -18,12 +18,15 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertTrue(inventory_path.is_file(), "verified manifest inventory is required")
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         verified_images = inventory["images"]
+        images = {key: value for key, value in versions.items() if key.endswith("_IMAGE")}
 
-        self.assertEqual(13, len(versions))
-        self.assertEqual(13, len(verified_images))
+        self.assertEqual(17, len(images))
+        self.assertEqual("gemma4:e4b", versions["OLLAMA_LLM_MODEL"])
+        self.assertEqual("embeddinggemma:300m", versions["OLLAMA_EMBEDDING_MODEL"])
+        self.assertEqual(17, len(verified_images))
         self.assertEqual(
             {name: record["reference"] for name, record in verified_images.items()},
-            versions,
+            images,
         )
         for name, record in verified_images.items():
             self.assertRegex(name, r"^[A-Z][A-Z0-9_]*_IMAGE$")
@@ -33,6 +36,20 @@ class RepositoryContractTests(unittest.TestCase):
             )
             self.assertEqual("manifest-list", record["kind"], name)
             self.assertEqual(["linux/amd64"], record["verified_platforms"], name)
+
+    def test_chroma_admin_is_vendored_and_built_from_pinned_inputs(self):
+        upstream = repo_path("vendor/chromadb-admin/UPSTREAM.md").read_text(encoding="utf-8")
+        package = json.loads(repo_path("vendor/chromadb-admin/package.json").read_text())
+        dockerfile = repo_path("images/chromadb-admin/Dockerfile").read_text()
+
+        self.assertIn("efe867c86c78683d90b0eb74b88b351fc08f0b5f", upstream)
+        self.assertEqual("^2.0.1", package["dependencies"]["chromadb"])
+        self.assertTrue(repo_path("vendor/chromadb-admin/package-lock.json").is_file())
+        self.assertTrue(repo_path("vendor/chromadb-admin/LICENSE.txt").is_file())
+        self.assertIn("npm ci", dockerfile)
+        self.assertIn("USER node", dockerfile)
+        self.assertIn("EXPOSE 3001", dockerfile)
+        self.assertNotRegex(dockerfile, r"(?m)^FROM\s+node:")
 
     def test_secret_files_are_ignored(self):
         ignored = repo_path(".gitignore").read_text(encoding="utf-8")

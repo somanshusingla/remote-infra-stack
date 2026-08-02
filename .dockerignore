@@ -1,0 +1,10 @@
+**
+!images/
+!images/chromadb-admin/
+!images/chromadb-admin/Dockerfile
+!vendor/
+!vendor/chromadb-admin/
+!vendor/chromadb-admin/**
+vendor/chromadb-admin/.git
+vendor/chromadb-admin/node_modules
+vendor/chromadb-admin/.next
