@@ -1,0 +1,807 @@
+import contextlib
+import hashlib
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tests.helpers import repo_path
+
+
+def available_powershells() -> list[str]:
+    executables: list[str] = []
+    seen: set[str] = set()
+    for name in ("powershell", "pwsh"):
+        discovered = shutil.which(name)
+        if not discovered:
+            continue
+        canonical = str(Path(discovered).resolve()).casefold()
+        if canonical in seen:
+            continue
+        result = subprocess.run(
+            [discovered, "-NoProfile", "-Command", "exit 0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            executables.append(discovered)
+            seen.add(canonical)
+    return executables
+
+
+POWERSHELLS = available_powershells()
+REAL_GIT = shutil.which("git")
+
+
+def run_git(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(directory), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def read_operations(log: Path) -> list[list[str]]:
+    if not log.exists():
+        return []
+    operations: list[list[str]] = []
+    for record in log.read_bytes().splitlines():
+        fields = record.split(b"\0")
+        if fields and fields[-1] == b"":
+            fields.pop()
+        operations.append([field.decode("utf-8") for field in fields])
+    return operations
+
+
+def scp_positionals(arguments: list[str]) -> list[str]:
+    positionals: list[str] = []
+    index = 0
+    while index < len(arguments):
+        if arguments[index] in ("-P", "-i"):
+            index += 2
+        elif arguments[index].startswith("-"):
+            index += 1
+        else:
+            positionals.append(arguments[index])
+            index += 1
+    return positionals
+
+
+FAKE_COMMON = r"""
+function Add-FakeRecord {
+    param([string]$Kind, [string[]]$Values, [string]$Path)
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $record = (@($Kind) + @($Values) -join [char]0) + [char]0 + "`n"
+    [System.IO.File]::AppendAllText($Path, $record, $utf8)
+}
+"""
+
+
+FAKE_SSH = FAKE_COMMON + r"""
+$ErrorActionPreference = 'Stop'
+$remaining = @($args)
+Add-FakeRecord -Kind 'ssh' -Values $remaining -Path $env:STACK_FAKE_LOG
+if (-not [string]::IsNullOrEmpty($env:STACK_FAKE_REMOTE_LOG)) {
+    $index = 0
+    while ($index -lt $remaining.Count) {
+        if ($remaining[$index] -in @('-p', '-i')) { $index += 2; continue }
+        if ($remaining[$index] -eq '--') { $index += 1; break }
+        if ($remaining[$index].StartsWith('-')) { $index += 1; continue }
+        break
+    }
+    $target = if ($index -lt $remaining.Count) { $remaining[$index] } else { '' }
+    $index += 1
+    $command = if ($index -lt $remaining.Count) { $remaining[$index] } else { '' }
+    Add-FakeRecord -Kind 'ssh-remote' -Values @($target, $command) -Path $env:STACK_FAKE_REMOTE_LOG
+}
+exit 0
+"""
+
+
+FAKE_SCP = FAKE_COMMON + r"""
+$ErrorActionPreference = 'Stop'
+$remaining = @($args)
+Add-FakeRecord -Kind 'scp' -Values $remaining -Path $env:STACK_FAKE_LOG
+$positionals = New-Object System.Collections.Generic.List[string]
+for ($index = 0; $index -lt $remaining.Count;) {
+    if ($remaining[$index] -in @('-P', '-i')) { $index += 2; continue }
+    if ($remaining[$index].StartsWith('-')) { $index += 1; continue }
+    $positionals.Add($remaining[$index])
+    $index += 1
+}
+if (-not [string]::IsNullOrEmpty($env:STACK_FAKE_CAPTURE_DIR)) {
+    for ($index = 0; $index + 1 -lt $positionals.Count; $index += 1) {
+        $source = $positionals[$index]
+        if ([System.IO.File]::Exists($source)) {
+            [System.IO.File]::Copy(
+                $source,
+                [System.IO.Path]::Combine($env:STACK_FAKE_CAPTURE_DIR, [System.IO.Path]::GetFileName($source)),
+                $true
+            )
+        }
+    }
+}
+exit 0
+"""
+
+
+FAKE_GIT = FAKE_COMMON + r"""
+$ErrorActionPreference = 'Stop'
+$remaining = @($args)
+if (-not [string]::IsNullOrEmpty($env:STACK_GIT_LOG)) {
+    Add-FakeRecord -Kind 'git' -Values $remaining -Path $env:STACK_GIT_LOG
+}
+& $env:STACK_REAL_GIT @remaining
+$status = $LASTEXITCODE
+if ($status -ne 0) { exit $status }
+if (($remaining -contains 'archive') -and
+    -not [string]::IsNullOrEmpty($env:STACK_GIT_MUTATION) -and
+    -not [System.IO.File]::Exists($env:STACK_GIT_MUTATION_MARKER)) {
+    [System.IO.File]::WriteAllText($env:STACK_GIT_MUTATION_MARKER, 'mutated')
+    switch ($env:STACK_GIT_MUTATION) {
+        'move-head' {
+            [System.IO.File]::AppendAllText(
+                [System.IO.Path]::Combine($env:STACK_GIT_REPO, 'committed.txt'),
+                "moved HEAD`n"
+            )
+            & $env:STACK_REAL_GIT -C $env:STACK_GIT_REPO add committed.txt
+            & $env:STACK_REAL_GIT -C $env:STACK_GIT_REPO commit -m 'move head during deploy' | Out-Null
+        }
+        'edit-receiver' {
+            [System.IO.File]::AppendAllText(
+                [System.IO.Path]::Combine($env:STACK_GIT_REPO, 'scripts', 'remote', 'deploy-release.sh'),
+                "`nprintf `"MUTATED RECEIVER\\n`" >&2`n"
+            )
+        }
+        'edit-env' {
+            [System.IO.File]::AppendAllText(
+                [System.IO.Path]::Combine($env:STACK_GIT_REPO, '.env'),
+                "`nMUTATED_DURING_ARCHIVE=yes`n"
+            )
+        }
+        default { exit 97 }
+    }
+}
+exit 0
+"""
+
+
+FAKE_DOCKER = FAKE_COMMON + r"""
+$ErrorActionPreference = 'Stop'
+$remaining = @($args)
+if (-not [string]::IsNullOrEmpty($env:STACK_DOCKER_LOG)) {
+    Add-FakeRecord -Kind 'docker' -Values $remaining -Path $env:STACK_DOCKER_LOG
+}
+if (($remaining -contains 'config') -and
+    -not [string]::IsNullOrEmpty($env:STACK_FAKE_REQUIRE_OPENSEARCH_B64)) {
+    if ([string]::IsNullOrEmpty($env:STACK_OPENSEARCH_CONFIG_B64) -or
+        [string]::IsNullOrEmpty($env:STACK_OPENSEARCH_ENTRYPOINT_B64)) { exit 61 }
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $configDigest = ([System.BitConverter]::ToString(
+            $sha.ComputeHash([System.Convert]::FromBase64String($env:STACK_OPENSEARCH_CONFIG_B64))
+        ) -replace '-', '').ToLowerInvariant()
+        $entrypointDigest = ([System.BitConverter]::ToString(
+            $sha.ComputeHash([System.Convert]::FromBase64String($env:STACK_OPENSEARCH_ENTRYPOINT_B64))
+        ) -replace '-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+    [System.IO.File]::WriteAllText(
+        $env:STACK_FAKE_CONTENT_LOG,
+        "config/opensearch/opensearch.yml $configDigest`nconfig/opensearch/docker-entrypoint.sh $entrypointDigest`n",
+        $utf8
+    )
+}
+if ($remaining -contains 'info') { exit 1 }
+exit 0
+"""
+
+
+class PowerShellOperatorTests(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        if not POWERSHELLS:
+            self.skipTest("PowerShell is not installed")
+        if REAL_GIT is None:
+            self.skipTest("Git is not installed")
+
+    @contextlib.contextmanager
+    def operator_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "repository with spaces"
+            fake_dir = base / "controlled fakes"
+            root.mkdir()
+            fake_dir.mkdir()
+            shutil.copytree(repo_path("scripts"), root / "scripts")
+            shutil.copytree(repo_path("config"), root / "config")
+            for name in (
+                "compose.yaml",
+                "versions.env",
+                ".env.example",
+                "remote.env.example",
+                ".gitattributes",
+                ".gitignore",
+            ):
+                shutil.copy2(repo_path(name), root / name)
+            with (root / ".gitignore").open("a", encoding="utf-8") as handle:
+                handle.write("ignored-note.txt\n")
+            (root / "committed.txt").write_text("committed HEAD\n", encoding="utf-8")
+            run_git(root, "init", "-b", "main")
+            run_git(root, "config", "user.name", "Operator Tests")
+            run_git(root, "config", "user.email", "operator@example.invalid")
+            run_git(root, "config", "core.autocrlf", "false")
+            run_git(root, "add", "-A")
+            run_git(root, "commit", "-m", "fixture")
+            shutil.copy2(repo_path("tests/fixtures/stack.env"), root / ".env")
+            (root / "ignored-note.txt").write_text("ignored local data\n", encoding="utf-8")
+            (fake_dir / "ssh.ps1").write_text(FAKE_SSH, encoding="utf-8", newline="\n")
+            (fake_dir / "scp.ps1").write_text(FAKE_SCP, encoding="utf-8", newline="\n")
+            (fake_dir / "git.ps1").write_text(FAKE_GIT, encoding="utf-8", newline="\n")
+            (fake_dir / "docker.ps1").write_text(FAKE_DOCKER, encoding="utf-8", newline="\n")
+            yield base, root, fake_dir
+
+    def environment(
+        self,
+        fake_dir: Path,
+        log: Path,
+        capture: Path | None = None,
+        remote_env: Path | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("STACK_FAKE_")
+            and not key.startswith("STACK_DOCKER_")
+            and not key.startswith("STACK_GIT_")
+            and key not in ("STACK_OPENSEARCH_CONFIG_B64", "STACK_OPENSEARCH_ENTRYPOINT_B64")
+        }
+        environment.update(
+            {
+                "PATH": str(fake_dir),
+                "PATHEXT": ".PS1;.EXE;.CMD;.BAT",
+                "STACK_FAKE_LOG": str(log),
+                "STACK_FAKE_REMOTE_LOG": str(log.with_suffix(".remote.log")),
+                "STACK_REMOTE_ENV": str(remote_env or repo_path("tests/fixtures/remote.env")),
+                "STACK_REAL_GIT": str(REAL_GIT),
+            }
+        )
+        if capture is not None:
+            environment["STACK_FAKE_CAPTURE_DIR"] = str(capture)
+        if extra_env:
+            environment.update(extra_env)
+        return environment
+
+    def run_script(
+        self,
+        shell: str,
+        root: Path,
+        fake_dir: Path,
+        script: str,
+        *arguments: str,
+        log: Path,
+        capture: Path | None = None,
+        remote_env: Path | None = None,
+        input_text: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                shell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(root / "scripts" / script),
+                *arguments,
+            ],
+            cwd=root,
+            env=self.environment(fake_dir, log, capture, remote_env, extra_env),
+            input=input_text,
+            capture_output=True,
+            text=True,
+        )
+
+    def remote_env_with(self, destination: Path, **values: str) -> Path:
+        content = repo_path("tests/fixtures/remote.env").read_text(encoding="utf-8")
+        for key, value in values.items():
+            replacement = f"{key}={value}"
+            content = re.sub(
+                rf"(?m)^{re.escape(key)}=.*$",
+                lambda _match, replacement=replacement: replacement,
+                content,
+            )
+        destination.write_text(content, encoding="utf-8", newline="\n")
+        return destination
+
+    def assert_for_each_shell(self, callback):
+        for shell in POWERSHELLS:
+            with self.subTest(shell=Path(shell).name):
+                callback(shell)
+
+    def test_bootstrap_matches_serialized_bash_operation_contract(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                result = self.run_script(shell, root, fake_dir, "bootstrap.ps1", log=log)
+                self.assertEqual(0, result.returncode, result.stderr)
+                operations = read_operations(log)
+                self.assertEqual(["ssh", "scp", "ssh", "ssh"], [item[0] for item in operations])
+                scp = operations[1][1:]
+                self.assertEqual(["-P", "2222", "-i", "C:/fixtures/test-remote-infra-stack"], scp[:4])
+                self.assertTrue(Path(scp[4]).is_absolute(), scp[4])
+                self.assertTrue(scp[4].replace("\\", "/").endswith("/scripts/remote/bootstrap-host.sh"))
+                remote_bootstrap = scp[5].split(":", 1)[1]
+                self.assertRegex(remote_bootstrap, r"^remote-infra-stack/incoming/bootstrap-[A-Za-z0-9]+\.sh$")
+                for operation in (item for item in operations if item[0] == "ssh"):
+                    target_index = operation.index("tester@test-remote-infra-stack")
+                    self.assertEqual("--", operation[target_index - 1])
+                    self.assertEqual(1, len(operation[target_index + 1 :]))
+                    shlex.split(operation[-1])
+                self.assertEqual(["sudo", "bash", remote_bootstrap, "--install"], shlex.split(operations[2][-1]))
+                self.assertEqual(["rm", "-f", "--", remote_bootstrap], shlex.split(operations[3][-1]))
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_matches_archive_upload_receiver_and_cleanup_contract(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                capture = base / "capture"
+                capture.mkdir()
+                result = self.run_script(
+                    shell, root, fake_dir, "deploy.ps1", "core", "vector", log=log, capture=capture
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                operations = read_operations(log)
+                self.assertEqual(["scp", "ssh", "ssh"], [item[0] for item in operations])
+                scp = operations[0][1:]
+                self.assertEqual(["-P", "2222", "-i", "C:/fixtures/test-remote-infra-stack"], scp[:4])
+                positionals = scp_positionals(scp)
+                sources, destination = positionals[:-1], positionals[-1]
+                self.assertEqual(4, len(sources))
+                self.assertTrue(all(Path(source).is_absolute() for source in sources))
+                staging_parents = {Path(source).parent for source in sources}
+                self.assertEqual(1, len(staging_parents))
+                self.assertRegex(
+                    next(iter(staging_parents)).as_posix(),
+                    r"/\.artifacts/deploy\.[A-Za-z0-9]+$",
+                )
+                uploaded = [Path(source).name for source in sources]
+                archive_name = next(name for name in uploaded if name.endswith(".tar.gz"))
+                self.assertRegex(
+                    archive_name,
+                    r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}-[A-Za-z0-9]+\.tar\.gz$",
+                )
+                self.assertIn(f"{archive_name}.sha256", uploaded)
+                env_name = next(name for name in uploaded if name.startswith("runtime-env-"))
+                receiver_name = next(name for name in uploaded if name.startswith("deploy-release-"))
+                self.assertEqual(4, len(set(uploaded)))
+                self.assertEqual("tester@test-remote-infra-stack:remote-infra-stack/incoming/", destination)
+
+                archive = capture / archive_name
+                with tarfile.open(archive, "r:gz") as release:
+                    members = {member.name.removeprefix("./") for member in release.getmembers()}
+                self.assertIn("committed.txt", members)
+                self.assertNotIn(".env", members)
+                checksum = capture / f"{archive_name}.sha256"
+                self.assertEqual(
+                    f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive_name}\n",
+                    checksum.read_text(encoding="ascii"),
+                )
+                expected_receiver = subprocess.run(
+                    ["git", "-C", str(root), "show", "HEAD:scripts/remote/deploy-release.sh"],
+                    check=True,
+                    capture_output=True,
+                ).stdout
+                captured_receiver = (capture / receiver_name).read_bytes()
+                self.assertEqual(expected_receiver, captured_receiver)
+                self.assertNotIn(b"\r\n", captured_receiver)
+
+                receiver_argv = shlex.split(operations[1][-1])
+                self.assertEqual(
+                    [
+                        "bash", f"remote-infra-stack/incoming/{receiver_name}",
+                        "--root", "remote-infra-stack",
+                        "--archive", f"remote-infra-stack/incoming/{archive_name}",
+                        "--checksum", f"remote-infra-stack/incoming/{archive_name}.sha256",
+                        "--env", f"remote-infra-stack/incoming/{env_name}",
+                        "--profiles", "core,vector",
+                    ],
+                    receiver_argv,
+                )
+                cleanup_argv = shlex.split(operations[2][-1])
+                self.assertEqual(["rm", "-f", "--"], cleanup_argv[:3])
+                self.assertEqual(
+                    {f"remote-infra-stack/incoming/{name}" for name in uploaded},
+                    set(cleanup_argv[3:]),
+                )
+                self.assertFalse((root / ".artifacts").exists())
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_rejects_symlinked_artifact_parent_before_remote_calls(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                outside = base / "outside artifacts"
+                outside.mkdir()
+                artifact_parent = root / ".artifacts"
+                junction_created = False
+                try:
+                    os.symlink(outside, artifact_parent, target_is_directory=True)
+                except OSError as error:
+                    if os.name != "nt":
+                        self.skipTest(f"directory symlinks unavailable: {error}")
+                    junction = subprocess.run(
+                        ["cmd.exe", "/d", "/c", "mklink", "/J", str(artifact_parent), str(outside)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if junction.returncode != 0:
+                        self.skipTest(f"directory links unavailable: {error}; {junction.stderr}")
+                    junction_created = True
+                try:
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell, root, fake_dir, "deploy.ps1", "core", log=log
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("real non-symlink", result.stderr)
+                    self.assertEqual([], list(outside.iterdir()))
+                    self.assertEqual([], read_operations(log))
+                finally:
+                    if junction_created and artifact_parent.exists():
+                        os.rmdir(artifact_parent)
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_rejects_dirty_and_tracked_secret_inputs_before_remote_calls(self):
+        def verify(shell: str):
+            mutations = []
+            mutations.append(
+                (
+                    lambda root: (root / "committed.txt").write_text("dirty\n", encoding="utf-8"),
+                    "clean committed Git HEAD",
+                )
+            )
+
+            def staged_change(root: Path):
+                (root / "committed.txt").write_text("staged\n", encoding="utf-8")
+                run_git(root, "add", "committed.txt")
+
+            def untracked_change(root: Path):
+                (root / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+
+            def tracked_env(root: Path):
+                run_git(root, "add", "-f", ".env")
+                run_git(root, "commit", "-m", "track env")
+
+            def tracked_repo_remote(root: Path):
+                shutil.copy2(repo_path("tests/fixtures/remote.env"), root / "remote.env")
+                run_git(root, "add", "-f", "remote.env")
+                run_git(root, "commit", "-m", "track remote env")
+
+            mutations.extend(
+                (
+                    (staged_change, "clean committed Git HEAD"),
+                    (untracked_change, "clean committed Git HEAD"),
+                    (tracked_env, ".env must not be tracked"),
+                    (tracked_repo_remote, "repository remote.env must not be tracked"),
+                )
+            )
+            for mutate, message in mutations:
+                with self.subTest(mutation=mutate.__name__), self.operator_repository() as (base, root, fake_dir):
+                    mutate(root)
+                    log = base / "fake.log"
+                    result = self.run_script(shell, root, fake_dir, "deploy.ps1", "core", log=log)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_uses_one_full_oid_and_rejects_head_or_receiver_mutation(self):
+        def verify(shell: str):
+            for mutation, expected in (
+                ("move-head", "HEAD changed during deployment preparation"),
+                ("edit-receiver", "clean committed Git HEAD"),
+            ):
+                with self.subTest(mutation=mutation), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    git_log = base / "git.log"
+                    marker = base / f"{mutation}.marker"
+                    expected_oid = run_git(root, "rev-parse", "HEAD").stdout.strip()
+                    environment = {
+                        "STACK_GIT_LOG": str(git_log),
+                        "STACK_GIT_MUTATION": mutation,
+                        "STACK_GIT_MUTATION_MARKER": str(marker),
+                        "STACK_GIT_REPO": str(root),
+                    }
+                    result = self.run_script(
+                        shell, root, fake_dir, "deploy.ps1", "core", log=log, extra_env=environment
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(expected, result.stderr)
+                    self.assertEqual([], read_operations(log))
+                    archives = [item for item in read_operations(git_log) if "archive" in item]
+                    self.assertEqual(1, len(archives))
+                    self.assertEqual(expected_oid, archives[0][-1])
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_snapshots_env_before_archive_and_sanitizes_inherited_hooks(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                capture = base / "capture"
+                capture.mkdir()
+                original = (root / ".env").read_bytes()
+                marker = base / "edit-env.marker"
+                result = self.run_script(
+                    shell,
+                    root,
+                    fake_dir,
+                    "deploy.ps1",
+                    "core",
+                    log=log,
+                    capture=capture,
+                    extra_env={
+                        "STACK_GIT_MUTATION": "edit-env",
+                        "STACK_GIT_MUTATION_MARKER": str(marker),
+                        "STACK_GIT_REPO": str(root),
+                    },
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                env_uploads = [path for path in capture.iterdir() if path.name.startswith("runtime-env-")]
+                self.assertEqual(1, len(env_uploads))
+                self.assertEqual(original, env_uploads[0].read_bytes())
+
+            with self.operator_repository() as (base, root, fake_dir):
+                inherited_marker = base / "inherited.marker"
+                inherited = {
+                    "STACK_GIT_MUTATION": "move-head",
+                    "STACK_GIT_MUTATION_MARKER": str(inherited_marker),
+                    "STACK_GIT_REPO": str(root),
+                }
+                log = base / "fake.log"
+                with mock.patch.dict(os.environ, inherited):
+                    result = self.run_script(shell, root, fake_dir, "deploy.ps1", "core", log=log)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(inherited_marker.exists())
+
+        self.assert_for_each_shell(verify)
+
+    def test_stack_status_logs_profiles_and_destroy_match_bash_semantics(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                result = self.run_script(shell, root, fake_dir, "stack.ps1", "status", log=log)
+                self.assertEqual(0, result.returncode, result.stderr)
+                operation = read_operations(log)[0]
+                self.assertEqual("--", operation[-3])
+                self.assertEqual("tester@test-remote-infra-stack", operation[-2])
+                self.assertEqual(
+                    ["bash", "remote-infra-stack/current/scripts/remote/stack.sh", "status"],
+                    shlex.split(operation[-1]),
+                )
+
+            for arguments, message in (
+                (("up", "tools"), "tools requires core"),
+                (("up", "core", "core"), "duplicate profile"),
+                (("stop", "unknown"), "unknown profile"),
+                (("logs", "core;id"), "unknown log target"),
+                (("logs", "app-postgres'bad"), "unknown log target"),
+            ):
+                with self.subTest(arguments=arguments), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    result = self.run_script(shell, root, fake_dir, "stack.ps1", *arguments, log=log)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                result = self.run_script(
+                    shell,
+                    root,
+                    fake_dir,
+                    "stack.ps1",
+                    "destroy",
+                    log=log,
+                    input_text="test-remote-infra-stack\nDESTROY-remote-infra-stack\n",
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(
+                    [
+                        "bash", "remote-infra-stack/current/scripts/remote/stack.sh",
+                        "destroy", "remote-infra-stack", "DESTROY-remote-infra-stack",
+                    ],
+                    shlex.split(read_operations(log)[0][-1]),
+                )
+
+            for input_text, message in (
+                ("wrong-host\nDESTROY-remote-infra-stack\n", "remote target confirmation did not match"),
+                ("test-remote-infra-stack\nwrong-token\n", "destroy token did not match"),
+            ):
+                with self.subTest(message=message), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell,
+                        root,
+                        fake_dir,
+                        "stack.ps1",
+                        "destroy",
+                        log=log,
+                        input_text=input_text,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_remote_env_parser_is_allowlisted_strict_and_supports_empty_port(self):
+        def verify(shell: str):
+            base_content = repo_path("tests/fixtures/remote.env").read_text(encoding="utf-8")
+            variants = (
+                (base_content + "EXTRA=value\n", "unknown remote.env key"),
+                (base_content + "REMOTE_HOST=duplicate\n", "duplicate remote.env key"),
+                (base_content.replace("REMOTE_ROOT=remote-infra-stack", "REMOTE_ROOT=/srv/stack"), "relative REMOTE_ROOT"),
+                (base_content.replace("REMOTE_ROOT=remote-infra-stack", "REMOTE_ROOT=C:/srv/stack"), "relative REMOTE_ROOT"),
+                (base_content.replace("REMOTE_ROOT=remote-infra-stack", "REMOTE_ROOT=stack/../other"), "must not contain .."),
+                (base_content.replace("REMOTE_HOST=test-remote-infra-stack", "REMOTE_HOST=$(touch evaluated)"), "unsupported characters"),
+                (base_content.replace("REMOTE_HOST=test-remote-infra-stack", "REMOTE_HOST=-host"), "option prefix"),
+                (base_content.replace("REMOTE_HOST=test-remote-infra-stack", "REMOTE_HOST=host:22"), "must not contain a colon"),
+                (base_content.replace("REMOTE_USER=tester", "REMOTE_USER=-root"), "option prefix"),
+                (base_content.replace("REMOTE_PORT=2222", "REMOTE_PORT=not-a-port"), "must be an integer"),
+                (base_content.replace("REMOTE_PORT=2222", "REMOTE_PORT=65536"), "between 1 and 65535"),
+            )
+            for content, message in variants:
+                with self.subTest(message=message), self.operator_repository() as (base, root, fake_dir):
+                    remote_env = base / "invalid.env"
+                    remote_env.write_text(content, encoding="utf-8", newline="\n")
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell, root, fake_dir, "stack.ps1", "status", log=log, remote_env=remote_env
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+            with self.operator_repository() as (base, root, fake_dir):
+                remote_env = self.remote_env_with(base / "empty-port.env", REMOTE_PORT="")
+                log = base / "fake.log"
+                result = self.run_script(
+                    shell, root, fake_dir, "stack.ps1", "status", log=log, remote_env=remote_env
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertNotIn("-p", read_operations(log)[0])
+
+        self.assert_for_each_shell(verify)
+
+    def test_posix_serializer_preserves_apostrophes_and_metacharacters(self):
+        arguments = ["semi;colon", "$(touch escaped)", "quo'te", "space value"]
+        for shell in POWERSHELLS:
+            with self.subTest(shell=Path(shell).name), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / "escaped"
+                environment = os.environ.copy()
+                for index, argument in enumerate(arguments):
+                    environment[f"SERIALIZER_ARG_{index}"] = argument
+                command = (
+                    "$module=Import-Module '"
+                    + str(repo_path("scripts/lib/Common.psm1")).replace("'", "''")
+                    + "' -Force -PassThru -DisableNameChecking; "
+                    + "$values=@($env:SERIALIZER_ARG_0,$env:SERIALIZER_ARG_1,$env:SERIALIZER_ARG_2,$env:SERIALIZER_ARG_3); "
+                    + "ConvertTo-PosixCommand -Arguments $values"
+                )
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    cwd=directory,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(arguments, shlex.split(result.stdout.strip()), repr(result.stdout))
+                self.assertFalse(marker.exists())
+
+    def test_check_validates_identity_and_exact_opensearch_render_without_remote_calls(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                content_log = base / "content.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+                result = self.run_script(
+                    shell,
+                    root,
+                    fake_dir,
+                    "check.ps1",
+                    "search",
+                    log=log,
+                    remote_env=remote_env,
+                    extra_env={
+                        "STACK_FAKE_REQUIRE_OPENSEARCH_B64": "1",
+                        "STACK_FAKE_CONTENT_LOG": str(content_log),
+                    },
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("Local checks passed for profiles: search", result.stdout)
+                self.assertIn("local Docker daemon is unavailable", result.stderr)
+                self.assertEqual([], read_operations(log))
+                content = content_log.read_text(encoding="utf-8")
+                for relative in (
+                    "config/opensearch/opensearch.yml",
+                    "config/opensearch/docker-entrypoint.sh",
+                ):
+                    digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+                    self.assertIn(f"{relative} {digest}", content)
+
+            with self.operator_repository() as (base, root, fake_dir):
+                identity_directory = base / "identity directory"
+                identity_directory.mkdir()
+                remote_env = self.remote_env_with(
+                    base / "remote.env", REMOTE_IDENTITY_FILE=str(identity_directory)
+                )
+                log = base / "fake.log"
+                result = self.run_script(
+                    shell, root, fake_dir, "check.ps1", "core", log=log, remote_env=remote_env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("identity file must be a readable regular file", result.stderr)
+                self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_check_rejects_missing_dependencies_placeholders_and_sanitizes_hooks(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                (fake_dir / "scp.ps1").unlink()
+                log = base / "fake.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+                result = self.run_script(
+                    shell, root, fake_dir, "check.ps1", "core", log=log, remote_env=remote_env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("required command is unavailable: scp", result.stderr)
+                self.assertEqual([], read_operations(log))
+
+            with self.operator_repository() as (base, root, fake_dir):
+                shutil.copy2(root / ".env.example", root / ".env")
+                log = base / "fake.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+                result = self.run_script(
+                    shell, root, fake_dir, "check.ps1", "core", log=log, remote_env=remote_env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("placeholder", result.stderr)
+                self.assertEqual([], read_operations(log))
+
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                inherited_log = base / "inherited.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+                inherited = {
+                    "STACK_FAKE_FAIL_COMMAND": "config",
+                    "STACK_DOCKER_LOG": str(inherited_log),
+                }
+                with mock.patch.dict(os.environ, inherited):
+                    result = self.run_script(
+                        shell, root, fake_dir, "check.ps1", "core", log=log, remote_env=remote_env
+                    )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(inherited_log.exists())
+
+        self.assert_for_each_shell(verify)
+
+
+if __name__ == "__main__":
+    unittest.main()
