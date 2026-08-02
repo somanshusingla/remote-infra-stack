@@ -148,13 +148,13 @@ class ObservabilityComposeTests(unittest.TestCase):
 
     def test_minio_initializes_langfuse_bucket_before_starting_server(self):
         minio = self.model["services"]["minio"]
-        startup = " ".join(minio["command"])
 
-        self.assertIn("mkdir -p /data/langfuse", startup)
-        self.assertRegex(
-            startup,
-            r'mkdir -p /data/langfuse\s*&&\s*(?:exec )?minio server '
-            r'--address ":9000" --console-address ":9001" /data',
+        self.assertEqual(
+            [
+                'mkdir -p /data/langfuse && exec minio server --address ":9000" '
+                '--console-address ":9001" /data'
+            ],
+            minio["command"],
         )
         self.assertEqual(
             ["sh", "-c"],
