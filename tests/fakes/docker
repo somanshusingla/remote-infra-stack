@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${STACK_DOCKER_LOG:-}" ]]; then
+  {
+    printf 'docker'
+    printf ' %q' "$@"
+    printf '\n'
+  } >>"$STACK_DOCKER_LOG"
+fi
+
+joined=" $* "
+if [[ "$joined" == *" --config - "* ]]; then
+  cat >/dev/null
+fi
+case "${STACK_FAKE_FAIL_COMMAND:-}" in
+  config)
+    [[ "$joined" == *" config "* ]] && exit 41
+    ;;
+  pull)
+    [[ "$joined" == *" pull "* ]] && exit 42
+    ;;
+  up)
+    [[ "$joined" == *" up "* ]] && exit 43
+    ;;
+  ps)
+    [[ "$joined" == *" ps "* ]] && exit 44
+    ;;
+esac
+
+if [[ "$joined" == *" config "* && "$joined" == *" --format json "* ]]; then
+  cat <<'JSON'
+{"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912},"chroma":{"mem_limit":4294967296},"opensearch":{"mem_limit":6442450944},"opensearch-dashboards":{"mem_limit":1073741824},"langfuse-postgres":{"mem_limit":2147483648},"langfuse-redis":{"mem_limit":536870912},"clickhouse":{"mem_limit":6442450944},"minio":{"mem_limit":1073741824},"langfuse-worker":{"mem_limit":2147483648},"langfuse-web":{"mem_limit":2147483648},"pgadmin":{"mem_limit":536870912},"redisinsight":{"mem_limit":536870912}}}
+JSON
+  exit 0
+fi
+
+if [[ "$joined" == *" config "* && -n "${STACK_FAKE_HOLD_SECONDS:-}" ]]; then
+  sleep "$STACK_FAKE_HOLD_SECONDS"
+fi
+
+if [[ "$joined" == *" ps "* && "$joined" == *" --format json "* ]]; then
+  if [[ -n "${STACK_FAKE_PS_JSON:-}" ]]; then
+    printf '%s\n' "$STACK_FAKE_PS_JSON"
+  else
+    cat <<'JSON'
+[{"Service":"app-postgres","State":"running","Health":"healthy"},{"Service":"app-redis","State":"running","Health":"healthy"},{"Service":"chroma","State":"running","Health":"healthy"},{"Service":"opensearch","State":"running","Health":"healthy"},{"Service":"opensearch-dashboards","State":"running","Health":"healthy"},{"Service":"langfuse-postgres","State":"running","Health":"healthy"},{"Service":"langfuse-redis","State":"running","Health":"healthy"},{"Service":"clickhouse","State":"running","Health":"healthy"},{"Service":"minio","State":"running","Health":"healthy"},{"Service":"langfuse-worker","State":"running","Health":"healthy"},{"Service":"langfuse-web","State":"running","Health":"healthy"},{"Service":"pgadmin","State":"running","Health":"healthy"},{"Service":"redisinsight","State":"running","Health":"healthy"}]
+JSON
+  fi
+fi
