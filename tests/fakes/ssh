@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${STACK_FAKE_LOG:?STACK_FAKE_LOG is required}"
+{
+  printf 'ssh\0'
+  printf '%s\0' "$@"
+  printf '\n'
+} >>"$STACK_FAKE_LOG"

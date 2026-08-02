@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${STACK_FAKE_LOG:?STACK_FAKE_LOG is required}"
+{
+  printf 'scp\0'
+  printf '%s\0' "$@"
+  printf '\n'
+} >>"$STACK_FAKE_LOG"
+
+if [[ -n "${STACK_FAKE_CAPTURE_DIR:-}" ]]; then
+  positionals=()
+  while (($#)); do
+    case "$1" in
+      -P|-i)
+        shift 2
+        ;;
+      -*)
+        shift
+        ;;
+      *)
+        positionals+=("$1")
+        shift
+        ;;
+    esac
+  done
+  for ((index = 0; index + 1 < ${#positionals[@]}; index++)); do
+    source_path=${positionals[$index]}
+    if [[ -f "$source_path" ]]; then
+      cp -- "$source_path" "$STACK_FAKE_CAPTURE_DIR/$(basename -- "$source_path")"
+    fi
+  done
+fi
