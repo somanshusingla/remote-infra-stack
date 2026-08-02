@@ -42,6 +42,12 @@ class DocumentationContractTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, readme)
 
+    def test_readme_lists_openssl_before_the_bash_quick_start(self):
+        readme = self.read_document("README.md")
+        requirements = readme[: readme.index("## Quick start")]
+
+        self.assertIn("OpenSSL", requirements)
+
     def test_readme_lists_every_local_tunnel_endpoint(self):
         readme = self.read_document("README.md")
 

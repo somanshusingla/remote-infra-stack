@@ -11,6 +11,8 @@ or UI port. Based on the full-stack Ubuntu 26.04 smoke test, 32 GiB is recommend
 A smaller VM may work when fewer profiles are selected; monitor actual workload usage.
 
 The examples deliberately select all profiles. `tools` requires `core`.
+The local Bash workflow also requires OpenSSL because `init-env.sh` generates secrets
+before `check.sh` can validate the repository.
 
 ## macOS/Linux (Bash)
 

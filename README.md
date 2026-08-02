@@ -31,7 +31,8 @@ used by Langfuse.
 Run the local scripts from the repository root. The local machine needs Git, OpenSSH
 (`ssh` and `scp`), and either:
 
-- Bash on macOS/Linux, with the standard utilities checked by `./scripts/check.sh`; or
+- Bash and OpenSSL on macOS/Linux, with the remaining standard utilities checked by
+  `./scripts/check.sh`; or
 - Windows PowerShell 5.1+ or PowerShell 7+, using the `.ps1` scripts.
 
 The project does not provision cloud resources. Supply an existing SSH-accessible
