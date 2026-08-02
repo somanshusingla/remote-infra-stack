@@ -96,12 +96,19 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertNotIn("--volumes", call)
 
     def test_destroy_requires_exact_target_token_and_is_only_volume_path(self):
-        for args in (("prod",), ("prod", "DESTROY-production"), ("prod", "destroy-prod")):
+        for args in (
+            ("remote-infra-stack",),
+            ("remote-infra-stack", "DESTROY-remote-infra-stacks"),
+            ("prod", "DESTROY-prod"),
+            ("typo", "DESTROY-typo"),
+        ):
             with self.subTest(args=args):
                 result = self.run_script("stack.sh", "destroy", *args)
                 self.assertNotEqual(0, result.returncode)
         self.assertFalse(self.log.exists())
-        result = self.run_script("stack.sh", "destroy", "prod", "DESTROY-prod")
+        result = self.run_script(
+            "stack.sh", "destroy", "remote-infra-stack", "DESTROY-remote-infra-stack"
+        )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(["--profile", "*", "down", "-v"], self.docker_calls()[0][-4:])
 
@@ -154,6 +161,53 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertIn("chroma", result.stderr)
         self.assertEqual(1, len(self.docker_calls()))
 
+    def test_health_requires_every_replica_healthy_and_every_service_present(self):
+        healthy_replicas = json.dumps([
+            {"Service": "chroma", "State": "running", "Health": "healthy"},
+            {"Service": "chroma", "State": "running", "Health": "healthy"},
+        ])
+        result = self.run_script("health.sh", "vector", STACK_FAKE_PS_JSON=healthy_replicas)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        cases = {
+            "one-starting-replica": [
+                {"Service": "chroma", "State": "running", "Health": "healthy"},
+                {"Service": "chroma", "State": "running", "Health": "starting"},
+            ],
+            "one-unhealthy-replica": [
+                {"Service": "chroma", "State": "running", "Health": "healthy"},
+                {"Service": "chroma", "State": "running", "Health": "unhealthy"},
+            ],
+            "missing-selected-service": [
+                {"Service": "other", "State": "running", "Health": "healthy"},
+            ],
+        }
+        for label, records in cases.items():
+            with self.subTest(case=label):
+                self.log.unlink()
+                result = self.run_script(
+                    "health.sh", "vector", STACK_FAKE_PS_JSON=json.dumps(records)
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("chroma", result.stderr)
+                self.assertEqual(1, len(self.docker_calls()))
+
+    def test_health_includes_exited_replicas_hidden_by_default_ps(self):
+        visible = json.dumps([
+            {"Service": "chroma", "State": "running", "Health": "healthy"},
+        ])
+        all_containers = json.dumps([
+            {"Service": "chroma", "State": "running", "Health": "healthy"},
+            {"Service": "chroma", "State": "exited", "Health": ""},
+        ])
+        result = self.run_script(
+            "health.sh", "vector", STACK_FAKE_PS_JSON=visible,
+            STACK_FAKE_PS_ALL_JSON=all_containers,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("chroma", result.stderr)
+        self.assertEqual(1, len(self.docker_calls()))
+
     def test_health_maps_every_profile_to_its_exact_services_and_endpoints(self):
         result = self.run_script(
             "health.sh", "core", "vector", "search", "observability", "tools"
@@ -200,6 +254,54 @@ class RemoteRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("memory", result.stderr.lower())
+        self.assertIn("up", self.docker_calls()[-1])
+
+    def test_up_warns_between_ten_and_twenty_gib_but_still_runs(self):
+        fake_df = self.root / "df-warning"
+        fake_df.write_text(
+            "#!/usr/bin/env bash\nprintf 'Avail\\n%u\\n' \"${STACK_FAKE_DISK_BYTES}\"\n",
+            encoding="utf-8",
+        )
+        fake_df.chmod(0o755)
+        meminfo = self.root / "large-meminfo"
+        meminfo.write_text("MemTotal: 67108864 kB\n", encoding="ascii")
+        result = self.run_script(
+            "stack.sh", "up", "core", DF_BIN=shell_path(fake_df),
+            MEMINFO_FILE=shell_path(meminfo), STACK_FAKE_DISK_BYTES=str(15 * 1024**3),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("20 GiB", result.stderr)
+        self.assertIn("up", self.docker_calls()[-1])
+
+    def test_up_requires_jq_before_docker_and_sums_exact_selected_memory(self):
+        missing = self.run_script("stack.sh", "up", "core", JQ_BIN="/missing/jq")
+        self.assertNotEqual(0, missing.returncode)
+        self.assertIn("jq", missing.stderr.lower())
+        self.assertFalse(self.log.exists())
+
+        config = json.dumps({"services": {
+            "app-postgres": {"mem_limit": 1073741824},
+            "app-redis": {"mem_limit": 536870912},
+            "chroma": {"mem_limit": 999999999999},
+        }})
+        exact_meminfo = self.root / "exact-meminfo"
+        exact_meminfo.write_text("MemTotal: 3670016 kB\n", encoding="ascii")
+        exact = self.run_script(
+            "stack.sh", "up", "core", STACK_FAKE_CONFIG_JSON=config,
+            MEMINFO_FILE=shell_path(exact_meminfo),
+        )
+        self.assertEqual(0, exact.returncode, exact.stderr)
+        self.assertNotIn("host memory", exact.stderr)
+
+        self.log.unlink()
+        below_meminfo = self.root / "below-meminfo"
+        below_meminfo.write_text("MemTotal: 3670015 kB\n", encoding="ascii")
+        below = self.run_script(
+            "stack.sh", "up", "core", STACK_FAKE_CONFIG_JSON=config,
+            MEMINFO_FILE=shell_path(below_meminfo),
+        )
+        self.assertEqual(0, below.returncode, below.stderr)
+        self.assertIn("host memory", below.stderr)
         self.assertIn("up", self.docker_calls()[-1])
 
 

@@ -29,9 +29,13 @@ case "${STACK_FAKE_FAIL_COMMAND:-}" in
 esac
 
 if [[ "$joined" == *" config "* && "$joined" == *" --format json "* ]]; then
-  cat <<'JSON'
+  if [[ -n "${STACK_FAKE_CONFIG_JSON:-}" ]]; then
+    printf '%s\n' "$STACK_FAKE_CONFIG_JSON"
+  else
+    cat <<'JSON'
 {"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912},"chroma":{"mem_limit":4294967296},"opensearch":{"mem_limit":6442450944},"opensearch-dashboards":{"mem_limit":1073741824},"langfuse-postgres":{"mem_limit":2147483648},"langfuse-redis":{"mem_limit":536870912},"clickhouse":{"mem_limit":6442450944},"minio":{"mem_limit":1073741824},"langfuse-worker":{"mem_limit":2147483648},"langfuse-web":{"mem_limit":2147483648},"pgadmin":{"mem_limit":536870912},"redisinsight":{"mem_limit":536870912}}}
 JSON
+  fi
   exit 0
 fi
 
@@ -40,7 +44,9 @@ if [[ "$joined" == *" config "* && -n "${STACK_FAKE_HOLD_SECONDS:-}" ]]; then
 fi
 
 if [[ "$joined" == *" ps "* && "$joined" == *" --format json "* ]]; then
-  if [[ -n "${STACK_FAKE_PS_JSON:-}" ]]; then
+  if [[ "$joined" == *" --all "* && -n "${STACK_FAKE_PS_ALL_JSON:-}" ]]; then
+    printf '%s\n' "$STACK_FAKE_PS_ALL_JSON"
+  elif [[ -n "${STACK_FAKE_PS_JSON:-}" ]]; then
     printf '%s\n' "$STACK_FAKE_PS_JSON"
   else
     cat <<'JSON'

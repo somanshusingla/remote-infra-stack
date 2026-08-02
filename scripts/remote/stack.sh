@@ -54,8 +54,10 @@ compose() {
 preflight_up() {
   local profiles=("$@")
   local df_bin=${DF_BIN:-df}
+  local jq_bin=${JQ_BIN:-jq}
   local meminfo_file=${MEMINFO_FILE:-/proc/meminfo}
   local free_bytes
+  command -v "$jq_bin" >/dev/null 2>&1 || die "required command is unavailable: jq"
   free_bytes=$("$df_bin" --output=avail -B1 "$stack_root" 2>/dev/null | awk 'NR > 1 { value=$1 } END { print value }') ||
     die "could not determine free disk space for $stack_root"
   [[ "$free_bytes" =~ ^[0-9]+$ ]] || die "could not determine free disk space for $stack_root"
@@ -68,21 +70,17 @@ preflight_up() {
   local model selected_services required_bytes available_kib
   model=$(compose "${profiles[@]}" -- config --format json) || die "Compose configuration rendering failed"
   mapfile -t selected_services < <(expand_profiles "${profiles[@]}")
-  if command -v jq >/dev/null 2>&1; then
-    required_bytes=$(jq --args \
-      '[.services[$ARGS.positional[]].mem_limit // 0 | tonumber] | add // 0' \
-      "${selected_services[@]}" <<<"$model") || die "could not total Compose memory limits"
-    required_bytes=$((required_bytes + 2 * 1024 * 1024 * 1024))
-    if [[ -r "$meminfo_file" ]]; then
-      available_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo_file")
-      if [[ "$available_kib" =~ ^[0-9]+$ ]] && (( required_bytes > available_kib * 1024 )); then
-        printf 'WARNING: selected service memory limits plus 2 GiB host overhead exceed host memory\n' >&2
-      fi
-    else
-      printf 'WARNING: memory availability could not be read from %s\n' "$meminfo_file" >&2
+  required_bytes=$("$jq_bin" --args \
+    '[.services[$ARGS.positional[]].mem_limit // 0 | tonumber] | add // 0' \
+    "${selected_services[@]}" <<<"$model") || die "could not total Compose memory limits"
+  required_bytes=$((required_bytes + 2 * 1024 * 1024 * 1024))
+  if [[ -r "$meminfo_file" ]]; then
+    available_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo_file")
+    if [[ "$available_kib" =~ ^[0-9]+$ ]] && (( required_bytes > available_kib * 1024 )); then
+      printf 'WARNING: selected service memory limits plus 2 GiB host overhead exceed host memory\n' >&2
     fi
   else
-    printf 'WARNING: jq is unavailable; selected service memory limits were not totaled\n' >&2
+    printf 'WARNING: memory availability could not be read from %s\n' "$meminfo_file" >&2
   fi
 }
 
@@ -131,8 +129,10 @@ case "$action" in
     (($# == 2)) || die "destroy requires a target and exact DESTROY-<target> token"
     target=$1
     token=$2
-    [[ -n "$target" && "$token" == "DESTROY-$target" ]] ||
-      die "destroy confirmation token must exactly equal DESTROY-$target"
+    [[ "$target" == remote-infra-stack ]] ||
+      die "destroy target must exactly equal remote-infra-stack"
+    [[ "$token" == DESTROY-remote-infra-stack ]] ||
+      die "destroy confirmation token must exactly equal DESTROY-remote-infra-stack"
     compose -- --profile '*' down -v
     ;;
   *) usage ;;

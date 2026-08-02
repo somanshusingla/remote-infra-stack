@@ -34,13 +34,15 @@ if [[ -n "${selected[tools]+x}" && -z "${selected[core]+x}" ]]; then
 fi
 
 command -v jq >/dev/null 2>&1 || die "required command is unavailable: jq"
-ps_output=$(bash "$compose_script" "${profiles[@]}" -- ps --format json) ||
+ps_output=$(bash "$compose_script" "${profiles[@]}" -- ps --all --format json) ||
   die "could not read Compose container health"
 ps_json=$(jq -c -s '[.[] | if type == "array" then .[] else . end]' <<<"$ps_output") ||
   die "Compose returned invalid JSON health data"
 for service in "${services[@]}"; do
   if ! jq -e --arg service "$service" \
-    'any(.[]; .Service == $service and .State == "running" and .Health == "healthy")' \
+    '([.[] | select(.Service == $service)]) as $matching |
+     ($matching | length) > 0 and
+     all($matching[]; .State == "running" and .Health == "healthy")' \
     <<<"$ps_json" >/dev/null; then
     die "service is not running and healthy: $service"
   fi
