@@ -83,6 +83,11 @@ class ToolComposeTests(unittest.TestCase):
             "RedisInsight must use the application Redis credential",
         )
         self.assertTrue(
+            redisinsight["RI_REDIS_PASSWORD"]
+            == model["services"]["app-redis"]["environment"]["APP_REDIS_PASSWORD"],
+            "RedisInsight must use the rendered app-Redis credential",
+        )
+        self.assertTrue(
             redisinsight["RI_ENCRYPTION_KEY"] == self.fixture["REDISINSIGHT_ENCRYPTION_KEY"],
             "RedisInsight must use its configured encryption key",
         )
@@ -112,6 +117,19 @@ class ToolComposeTests(unittest.TestCase):
                 )
                 with self.assertRaises(AssertionError):
                     self.assert_tools_get_only_required_credentials_and_redis_connection(mutated)
+
+    def test_redisinsight_credential_contract_rejects_app_side_wiring_mutation(self):
+        mutated = deepcopy(self.model)
+        mutated["services"]["app-redis"]["environment"]["APP_REDIS_PASSWORD"] = "invalid-test-value"
+        redisinsight = mutated["services"]["redisinsight"]["environment"]
+
+        self.assertTrue(
+            redisinsight["RI_REDIS_PASSWORD"] == self.fixture["APP_REDIS_PASSWORD"]
+            and redisinsight["RI_ENCRYPTION_KEY"] == self.fixture["REDISINSIGHT_ENCRYPTION_KEY"],
+            "mutation must bypass the previous fixture-only checks",
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_tools_get_only_required_credentials_and_redis_connection(mutated)
 
 
 if __name__ == "__main__":
