@@ -1,5 +1,29 @@
 name: remote-infra-stack
 
+x-langfuse-environment: &langfuse-environment
+  DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:?set in .env}:${LANGFUSE_POSTGRES_PASSWORD:?set in .env}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:?set in .env}
+  SALT: ${LANGFUSE_SALT:?set in .env}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set in .env}
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:?set in .env}
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set in .env}
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?set in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:?set in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:?set in .env}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER:?set in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD:?set in .env}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  TELEMETRY_ENABLED: "false"
+
 services:
   app-postgres:
     profiles: [core]
@@ -117,6 +141,134 @@ services:
     mem_limit: ${OPENSEARCH_DASHBOARDS_MEMORY:-1g}
     networks: [infra]
 
+  langfuse-postgres:
+    profiles: [observability]
+    image: ${LANGFUSE_POSTGRES_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:?set in .env}
+      POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:?set in .env}
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?set in .env}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${LANGFUSE_POSTGRES_MEMORY:-2g}
+    networks: [infra]
+
+  langfuse-redis:
+    profiles: [observability]
+    image: ${LANGFUSE_REDIS_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      LANGFUSE_REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:?set in .env}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory-policy noeviction --requirepass \"$$LANGFUSE_REDIS_PASSWORD\""]
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$LANGFUSE_REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${LANGFUSE_REDIS_MEMORY:-512m}
+    networks: [infra]
+
+  clickhouse:
+    profiles: [observability]
+    image: ${CLICKHOUSE_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:?set in .env}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?set in .env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    mem_limit: ${CLICKHOUSE_MEMORY:-6g}
+    networks: [infra]
+
+  minio:
+    profiles: [observability]
+    image: ${MINIO_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD:?set in .env}
+    command: ["server", "--address", ":9000", "--console-address", ":9001", "/data"]
+    ports:
+      - "127.0.0.1:9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: ${MINIO_MEMORY:-1g}
+    networks: [infra]
+
+  langfuse-worker:
+    profiles: [observability]
+    image: ${LANGFUSE_WORKER_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      <<: *langfuse-environment
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3030/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    mem_limit: ${LANGFUSE_WORKER_MEMORY:-2g}
+    networks: [infra]
+
+  langfuse-web:
+    profiles: [observability]
+    image: ${LANGFUSE_WEB_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      <<: *langfuse-environment
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/public/ready').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    mem_limit: ${LANGFUSE_WEB_MEMORY:-2g}
+    networks: [infra]
+
 networks:
   infra:
     name: remote-infra-stack-infra
@@ -130,3 +282,13 @@ volumes:
     name: remote-infra-stack-chroma-data
   opensearch_data:
     name: remote-infra-stack-opensearch-data
+  langfuse_postgres_data:
+    name: remote-infra-stack-langfuse-postgres-data
+  langfuse_redis_data:
+    name: remote-infra-stack-langfuse-redis-data
+  clickhouse_data:
+    name: remote-infra-stack-clickhouse-data
+  clickhouse_logs:
+    name: remote-infra-stack-clickhouse-logs
+  minio_data:
+    name: remote-infra-stack-minio-data
