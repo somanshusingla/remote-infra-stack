@@ -25,6 +25,8 @@ class SearchComposeTests(unittest.TestCase):
         self.assertEqual(9200, int(search["ports"][0]["published"]))
         self.assertEqual(5601, int(dashboards["ports"][0]["published"]))
         self.assertEqual(["opensearch"], list(dashboards["depends_on"]))
+        dashboards_health = dashboards["healthcheck"]["test"][1]
+        self.assertIn('admin:"$$OPENSEARCH_PASSWORD"', dashboards_health)
         self.assertEqual(-1, search["ulimits"]["memlock"]["soft"])
 
     def test_search_transports_verified_sources_without_host_bind_mounts(self):

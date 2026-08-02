@@ -230,6 +230,25 @@ class RemoteRuntimeTests(unittest.TestCase):
         ):
             self.assertIn(endpoint, rendered)
 
+    def test_health_authenticates_both_search_endpoints_without_exposing_password(self):
+        secret = "search-health-sentinel"
+        env_file = self.root / "runtime/.env"
+        env_file.write_text(
+            env_file.read_text(encoding="utf-8").replace(
+                "OPENSEARCH_INITIAL_ADMIN_PASSWORD=remote-only-test-value",
+                f"OPENSEARCH_INITIAL_ADMIN_PASSWORD={secret}",
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_script("health.sh", "search")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertEqual(2, sum("--config" in call for call in calls))
+        combined = result.stdout + result.stderr + self.log.read_text(encoding="utf-8")
+        self.assertNotIn(secret, combined)
+
     def test_status_reports_compose_and_docker_usage(self):
         result = self.run_script("stack.sh", "status")
         self.assertEqual(0, result.returncode, result.stderr)

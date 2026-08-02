@@ -79,8 +79,10 @@ if [[ -n "${selected[search]+x}" ]]; then
   printf 'user = "admin:%s"\n' "$escaped_password" |
     "$curl_bin" --config - --fail --silent --show-error --insecure --max-time 10 \
       https://127.0.0.1:9200/_cluster/health >/dev/null
+  printf 'user = "admin:%s"\n' "$escaped_password" |
+    "$curl_bin" --config - --fail --silent --show-error --max-time 10 \
+      http://127.0.0.1:5601/api/status >/dev/null
   unset opensearch_password escaped_password
-  http_get http://127.0.0.1:5601/api/status
 fi
 if [[ -n "${selected[observability]+x}" ]]; then
   compose_exec langfuse-postgres sh -c 'exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null
