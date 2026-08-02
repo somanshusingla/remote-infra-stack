@@ -66,6 +66,63 @@ class EnvGenerationTests(unittest.TestCase):
             self.assert_contract(output)
             self.assert_refuses_then_forces(command, output, "--force")
 
+    def test_bash_generator_refuses_a_destination_created_during_generation(self):
+        shell = shutil.which("bash")
+        if not shell:
+            self.skipTest("bash is not installed")
+        if subprocess.run([shell, "--version"], capture_output=True).returncode != 0:
+            self.skipTest("bash is not available")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / ".env"
+            complete = root / "collision-complete"
+            bin_directory = root / "bin"
+            bin_directory.mkdir()
+            openssl = bin_directory / "openssl"
+            openssl.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -e \"$INIT_ENV_TEST_COLLISION_DONE\" ]]; then\n"
+                "  : > \"$INIT_ENV_TEST_COLLISION_DONE\"\n"
+                "  printf '%s\\n' 'created-during-generation' > \"$INIT_ENV_TEST_COLLISION_OUTPUT\"\n"
+                "fi\n"
+                "printf '%0*d\\n' \"$(( $3 * 2 ))\" 0\n",
+                encoding="utf-8",
+            )
+            openssl.chmod(openssl.stat().st_mode | stat.S_IXUSR)
+            environment = os.environ | {
+                "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
+                "INIT_ENV_TEST_COLLISION_DONE": str(complete),
+                "INIT_ENV_TEST_COLLISION_OUTPUT": str(output),
+            }
+
+            result = subprocess.run(
+                [shell, str(repo_path("scripts/init-env.sh")), "--output", str(output)],
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("created-during-generation\n", output.read_text(encoding="utf-8"))
+
+    def test_bash_generator_writes_a_leading_dash_filename_in_a_temporary_directory(self):
+        shell = shutil.which("bash")
+        if not shell:
+            self.skipTest("bash is not installed")
+        if subprocess.run([shell, "--version"], capture_output=True).returncode != 0:
+            self.skipTest("bash is not available")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "-generated.env"
+            result = subprocess.run(
+                [shell, str(repo_path("scripts/init-env.sh")), "--output", output.name],
+                capture_output=True,
+                text=True,
+                cwd=directory,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assert_contract(output)
+
     def test_powershell_generator(self):
         shell = shutil.which("pwsh") or shutil.which("powershell")
         if not shell:

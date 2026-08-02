@@ -26,7 +26,11 @@ while (($#)); do
   esac
 done
 
-if [[ -e "$output" && "$force" != true ]]; then
+if [[ "$output" == -* ]]; then
+  output=./$output
+fi
+
+if [[ ( -e "$output" || -L "$output" ) && "$force" != true ]]; then
   printf 'Refusing to overwrite %s without --force\n' "$output" >&2
   exit 1
 fi
@@ -72,5 +76,17 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   esac
 done <"$template"
 
-mv -f "$temporary" "$output"
+if [[ "$force" == true ]]; then
+  mv -f "$temporary" "$output"
+elif ln "$temporary" "$output"; then
+  rm -f "$temporary"
+else
+  if [[ -e "$output" || -L "$output" ]]; then
+    printf 'Refusing to overwrite %s without --force\n' "$output" >&2
+  else
+    printf 'Unable to publish %s\n' "$output" >&2
+  fi
+  exit 1
+fi
+
 trap - EXIT
