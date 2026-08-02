@@ -82,7 +82,18 @@ elif [[ -e "$output" || -L "$output" ]]; then
   printf 'Refusing to overwrite %s without --force\n' "$output" >&2
   exit 1
 elif ln "$temporary" "$output"; then
-  rm -f "$temporary"
+  if [[ ! -d "$output" && "$temporary" -ef "$output" ]]; then
+    rm -f "$temporary"
+  else
+    if [[ -d "$output" ]]; then
+      misplaced="$output/${temporary##*/}"
+      if [[ -e "$misplaced" && "$temporary" -ef "$misplaced" ]]; then
+        rm -f "$misplaced"
+      fi
+    fi
+    printf 'Unable to publish %s\n' "$output" >&2
+    exit 1
+  fi
 else
   if [[ -e "$output" || -L "$output" ]]; then
     printf 'Refusing to overwrite %s without --force\n' "$output" >&2
