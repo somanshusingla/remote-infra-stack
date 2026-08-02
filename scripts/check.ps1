@@ -92,8 +92,12 @@ try {
     $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
     $composeAvailable = $false
     if ($null -ne $dockerCommand) {
-        & docker compose version *> $null
-        $composeAvailable = $LASTEXITCODE -eq 0
+        try {
+            & docker compose version *> $null
+            $composeAvailable = $LASTEXITCODE -eq 0
+        } catch {
+            $composeAvailable = $false
+        }
     }
     if ($composeAvailable) {
         $composeArguments = @(
@@ -111,8 +115,14 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Throw-CommonError 'local Docker Compose configuration rendering failed'
         }
-        & docker info *> $null
-        if ($LASTEXITCODE -ne 0) {
+        $daemonAvailable = $false
+        try {
+            & docker info *> $null
+            $daemonAvailable = $LASTEXITCODE -eq 0
+        } catch {
+            $daemonAvailable = $false
+        }
+        if (-not $daemonAvailable) {
             [Console]::Error.WriteLine(
                 'WARNING: local Docker daemon is unavailable; remote validation remains authoritative.'
             )

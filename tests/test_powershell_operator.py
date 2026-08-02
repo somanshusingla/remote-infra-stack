@@ -132,6 +132,17 @@ $remaining = @($args)
 if (-not [string]::IsNullOrEmpty($env:STACK_DOCKER_LOG)) {
     Add-FakeRecord -Kind 'docker' -Values $remaining -Path $env:STACK_DOCKER_LOG
 }
+if (($remaining.Count -eq 2) -and
+    ($remaining[0] -ceq 'compose') -and
+    ($remaining[1] -ceq 'version') -and
+    -not [string]::IsNullOrEmpty($env:STACK_FAKE_DOCKER_PROBE_ERROR)) {
+    throw 'failed to connect to npipe docker_engine'
+}
+if (($remaining.Count -eq 1) -and
+    ($remaining[0] -ceq 'info') -and
+    -not [string]::IsNullOrEmpty($env:STACK_FAKE_DOCKER_INFO_ERROR)) {
+    throw 'failed to connect to npipe docker_engine'
+}
 if (($remaining -contains 'config') -and
     -not [string]::IsNullOrEmpty($env:STACK_FAKE_REQUIRE_OPENSEARCH_B64)) {
     if ([string]::IsNullOrEmpty($env:STACK_OPENSEARCH_CONFIG_B64) -or
@@ -1236,6 +1247,67 @@ class PowerShellOperatorTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn("identity file must be a readable regular file", result.stderr)
+                self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_check_treats_an_unusable_local_docker_cli_as_best_effort(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                docker_log = base / "docker.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+
+                result = self.run_script(
+                    shell,
+                    root,
+                    fake_dir,
+                    "check.ps1",
+                    "core",
+                    log=log,
+                    remote_env=remote_env,
+                    extra_env={
+                        "STACK_DOCKER_LOG": str(docker_log),
+                        "STACK_FAKE_DOCKER_PROBE_ERROR": "1",
+                    },
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("Local checks passed for profiles: core", result.stdout)
+                self.assertIn("local Docker Compose is unavailable", result.stderr)
+                self.assertEqual([["docker", "compose", "version"]], read_operations(docker_log))
+                self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_check_treats_a_docker_daemon_probe_error_as_best_effort(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                docker_log = base / "docker.log"
+                remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+
+                result = self.run_script(
+                    shell,
+                    root,
+                    fake_dir,
+                    "check.ps1",
+                    "core",
+                    log=log,
+                    remote_env=remote_env,
+                    extra_env={
+                        "STACK_DOCKER_LOG": str(docker_log),
+                        "STACK_FAKE_DOCKER_INFO_ERROR": "1",
+                    },
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("Local checks passed for profiles: core", result.stdout)
+                self.assertIn("local Docker daemon is unavailable", result.stderr)
+                docker_operations = read_operations(docker_log)
+                self.assertEqual(["docker", "compose", "version"], docker_operations[0])
+                self.assertIn("config", docker_operations[1])
+                self.assertEqual(["docker", "info"], docker_operations[2])
                 self.assertEqual([], read_operations(log))
 
         self.assert_for_each_shell(verify)

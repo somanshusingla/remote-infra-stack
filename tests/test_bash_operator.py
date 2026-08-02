@@ -701,6 +701,25 @@ class BashOperatorTests(unittest.TestCase):
             self.assertIn("Local checks passed for profiles: core vector", result.stdout)
             self.assertEqual([], read_operations(log))
 
+    def test_check_treats_an_unusable_local_docker_cli_as_best_effort(self):
+        with self.operator_repository() as root:
+            log = root / "fake.log"
+            remote_env = self.remote_env_with(root, REMOTE_IDENTITY_FILE="")
+
+            result = self.run_script(
+                root,
+                "check.sh",
+                "core",
+                log=log,
+                remote_env=remote_env,
+                extra_env={"STACK_FAKE_FAIL_COMMAND": "version"},
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("Local checks passed for profiles: core", result.stdout)
+            self.assertIn("local Docker Compose is unavailable", result.stderr)
+            self.assertEqual([], read_operations(log))
+
     def test_check_transports_exact_opensearch_sources_into_compose_render(self):
         with self.operator_repository() as root:
             log = root / "fake.log"

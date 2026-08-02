@@ -66,6 +66,9 @@ if [[ "$joined" == *" --config - "* ]]; then
   cat >/dev/null
 fi
 case "${STACK_FAKE_FAIL_COMMAND:-}" in
+  version)
+    [[ "$joined" == *" compose version "* ]] && exit 40
+    ;;
   config)
     [[ "$joined" == *" config "* ]] && exit 41
     ;;
