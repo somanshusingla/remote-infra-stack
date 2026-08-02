@@ -12,13 +12,13 @@ function Test-RemoteKeyAllowed {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Key)
 
-    return $Key -in @(
+    return @(
         'REMOTE_HOST', 'REMOTE_USER', 'REMOTE_PORT', 'REMOTE_IDENTITY_FILE', 'REMOTE_ROOT',
         'LOCAL_POSTGRES_PORT', 'LOCAL_REDIS_PORT', 'LOCAL_CHROMA_PORT',
         'LOCAL_OPENSEARCH_PORT', 'LOCAL_OPENSEARCH_DASHBOARDS_PORT',
         'LOCAL_LANGFUSE_PORT', 'LOCAL_PGADMIN_PORT', 'LOCAL_REDISINSIGHT_PORT',
         'LOCAL_MINIO_API_PORT', 'LOCAL_MINIO_CONSOLE_PORT'
-    )
+    ) -ccontains $Key
 }
 
 function Import-RemoteEnv {
@@ -29,7 +29,7 @@ function Import-RemoteEnv {
         Throw-CommonError "remote configuration file is missing: $Path"
     }
 
-    $values = @{}
+    $values = New-Object 'System.Collections.Generic.Dictionary[string,string]' -ArgumentList ([System.StringComparer]::Ordinal)
     $lineNumber = 0
     foreach ($rawLine in [System.IO.File]::ReadAllLines($Path)) {
         $lineNumber += 1
@@ -77,16 +77,19 @@ function Import-RemoteEnv {
     if ($hostName.Contains(':')) {
         Throw-CommonError 'REMOTE_HOST must not contain a colon; IPv6 targets are unsupported'
     }
-    if ($hostName -notmatch '^[A-Za-z0-9_.-]+$') {
+    if ($hostName -cnotmatch '^[A-Za-z0-9_.-]+$') {
         Throw-CommonError 'REMOTE_HOST contains unsupported characters'
     }
     if ($userName.StartsWith('-')) {
         Throw-CommonError 'REMOTE_USER must not begin with an option prefix'
     }
-    if ($userName.Length -gt 0 -and $userName -notmatch '^[A-Za-z0-9_.-]+$') {
+    if ($userName.Length -gt 0 -and $userName -cnotmatch '^[A-Za-z0-9_.-]+$') {
         Throw-CommonError 'REMOTE_USER contains unsupported characters'
     }
     if ($port.Length -gt 0) {
+        if ($port -cnotmatch '^[0-9]+$') {
+            Throw-CommonError 'REMOTE_PORT must be an integer'
+        }
         $parsedPort = 0
         if (-not [int]::TryParse($port, [ref]$parsedPort)) {
             Throw-CommonError 'REMOTE_PORT must be an integer'
@@ -99,14 +102,14 @@ function Import-RemoteEnv {
         [string]::IsNullOrEmpty($root) -or
         [System.IO.Path]::IsPathRooted($root) -or
         $root.StartsWith('~') -or
-        $root -match '^[A-Za-z]:'
+        $root -cmatch '^[A-Za-z]:'
     ) {
         Throw-CommonError 'REMOTE_ROOT must be a relative REMOTE_ROOT path'
     }
-    if ($root -match '(^|/)\.\.(/|$)') {
+    if ($root -cmatch '(^|/)\.\.(/|$)') {
         Throw-CommonError 'REMOTE_ROOT must not contain .. path components'
     }
-    if ($root -notmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$') {
+    if ($root -cnotmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$') {
         Throw-CommonError 'REMOTE_ROOT contains unsupported REMOTE_ROOT characters'
     }
 
@@ -120,17 +123,16 @@ function Assert-Profiles {
     if ($Profiles.Count -eq 0) {
         Throw-CommonError 'at least one profile is required'
     }
-    $seen = @{}
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::Ordinal)
     foreach ($profile in $Profiles) {
-        if ($profile -notin @('core', 'vector', 'search', 'observability', 'tools')) {
+        if (@('core', 'vector', 'search', 'observability', 'tools') -cnotcontains $profile) {
             Throw-CommonError "unknown profile: $profile"
         }
-        if ($seen.ContainsKey($profile)) {
+        if (-not $seen.Add($profile)) {
             Throw-CommonError "duplicate profile: $profile"
         }
-        $seen[$profile] = $true
     }
-    if ($seen.ContainsKey('tools') -and -not $seen.ContainsKey('core')) {
+    if ($seen.Contains('tools') -and -not $seen.Contains('core')) {
         Throw-CommonError 'tools requires core'
     }
 }
@@ -298,7 +300,7 @@ function Read-StrictEnvFile {
     if (-not [System.IO.File]::Exists($Path)) {
         Throw-CommonError "$Label is missing: $Path"
     }
-    $values = @{}
+    $values = New-Object 'System.Collections.Generic.Dictionary[string,string]' -ArgumentList ([System.StringComparer]::Ordinal)
     $order = New-Object System.Collections.Generic.List[string]
     $lineNumber = 0
     foreach ($rawLine in [System.IO.File]::ReadAllLines($Path)) {
@@ -350,14 +352,14 @@ function Assert-StackEnv {
     $password = [string]$actual.Values['OPENSEARCH_INITIAL_ADMIN_PASSWORD']
     if (
         $password.Length -lt 12 -or
-        $password -notmatch '[a-z]' -or
-        $password -notmatch '[A-Z]' -or
-        $password -notmatch '[0-9]'
+        $password -cnotmatch '[a-z]' -or
+        $password -cnotmatch '[A-Z]' -or
+        $password -cnotmatch '[0-9]'
     ) {
         Throw-CommonError 'OPENSEARCH_INITIAL_ADMIN_PASSWORD does not meet the local strength contract'
     }
     $encryptionKey = [string]$actual.Values['LANGFUSE_ENCRYPTION_KEY']
-    if ($encryptionKey -notmatch '^[0-9a-f]{64}$') {
+    if ($encryptionKey -cnotmatch '^[0-9a-f]{64}$') {
         Throw-CommonError 'LANGFUSE_ENCRYPTION_KEY must be 64 lowercase hexadecimal characters'
     }
 }

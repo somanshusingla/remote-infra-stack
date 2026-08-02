@@ -52,7 +52,7 @@ try {
         '*',
         [System.IO.SearchOption]::AllDirectories
     )) {
-        if ([System.IO.Path]::GetExtension($powerShellFile) -notin @('.ps1', '.psm1')) {
+        if (@('.ps1', '.psm1') -cnotcontains [System.IO.Path]::GetExtension($powerShellFile)) {
             continue
         }
         $tokens = $null

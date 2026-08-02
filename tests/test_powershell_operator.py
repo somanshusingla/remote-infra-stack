@@ -1,4 +1,5 @@
 import contextlib
+import base64
 import hashlib
 import os
 import re
@@ -84,54 +85,6 @@ function Add-FakeRecord {
 """
 
 
-FAKE_SSH = FAKE_COMMON + r"""
-$ErrorActionPreference = 'Stop'
-$remaining = @($args)
-Add-FakeRecord -Kind 'ssh' -Values $remaining -Path $env:STACK_FAKE_LOG
-if (-not [string]::IsNullOrEmpty($env:STACK_FAKE_REMOTE_LOG)) {
-    $index = 0
-    while ($index -lt $remaining.Count) {
-        if ($remaining[$index] -in @('-p', '-i')) { $index += 2; continue }
-        if ($remaining[$index] -eq '--') { $index += 1; break }
-        if ($remaining[$index].StartsWith('-')) { $index += 1; continue }
-        break
-    }
-    $target = if ($index -lt $remaining.Count) { $remaining[$index] } else { '' }
-    $index += 1
-    $command = if ($index -lt $remaining.Count) { $remaining[$index] } else { '' }
-    Add-FakeRecord -Kind 'ssh-remote' -Values @($target, $command) -Path $env:STACK_FAKE_REMOTE_LOG
-}
-exit 0
-"""
-
-
-FAKE_SCP = FAKE_COMMON + r"""
-$ErrorActionPreference = 'Stop'
-$remaining = @($args)
-Add-FakeRecord -Kind 'scp' -Values $remaining -Path $env:STACK_FAKE_LOG
-$positionals = New-Object System.Collections.Generic.List[string]
-for ($index = 0; $index -lt $remaining.Count;) {
-    if ($remaining[$index] -in @('-P', '-i')) { $index += 2; continue }
-    if ($remaining[$index].StartsWith('-')) { $index += 1; continue }
-    $positionals.Add($remaining[$index])
-    $index += 1
-}
-if (-not [string]::IsNullOrEmpty($env:STACK_FAKE_CAPTURE_DIR)) {
-    for ($index = 0; $index + 1 -lt $positionals.Count; $index += 1) {
-        $source = $positionals[$index]
-        if ([System.IO.File]::Exists($source)) {
-            [System.IO.File]::Copy(
-                $source,
-                [System.IO.Path]::Combine($env:STACK_FAKE_CAPTURE_DIR, [System.IO.Path]::GetFileName($source)),
-                $true
-            )
-        }
-    }
-}
-exit 0
-"""
-
-
 FAKE_GIT = FAKE_COMMON + r"""
 $ErrorActionPreference = 'Stop'
 $remaining = @($args)
@@ -204,8 +157,133 @@ exit 0
 """
 
 
+NATIVE_COMMAND_FAKE = r"""
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+public static class NativeCommandFake
+{
+    private static void WriteRecord(string path, IEnumerable<string> fields)
+    {
+        using (FileStream stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+        {
+            foreach (string field in fields)
+            {
+                byte[] bytes = new UTF8Encoding(false).GetBytes(field ?? string.Empty);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.WriteByte(0);
+            }
+            stream.WriteByte((byte)'\n');
+        }
+    }
+
+    public static int Main(string[] arguments)
+    {
+        string executable = Environment.GetCommandLineArgs()[0];
+        string kind = Path.GetFileNameWithoutExtension(executable).ToLowerInvariant();
+        string log = Environment.GetEnvironmentVariable("STACK_FAKE_LOG");
+        List<string> record = new List<string>();
+        record.Add(kind);
+        record.AddRange(arguments);
+        WriteRecord(log, record);
+
+        if (kind == "ssh")
+        {
+            string remoteLog = Environment.GetEnvironmentVariable("STACK_FAKE_REMOTE_LOG");
+            if (!string.IsNullOrEmpty(remoteLog))
+            {
+                int index = 0;
+                while (index < arguments.Length)
+                {
+                    if (arguments[index] == "-p" || arguments[index] == "-i") { index += 2; continue; }
+                    if (arguments[index] == "--") { index += 1; break; }
+                    if (arguments[index].StartsWith("-", StringComparison.Ordinal)) { index += 1; continue; }
+                    break;
+                }
+                List<string> remote = new List<string>();
+                remote.Add("ssh-remote");
+                remote.Add(index < arguments.Length ? arguments[index] : string.Empty);
+                index += 1;
+                while (index < arguments.Length) { remote.Add(arguments[index]); index += 1; }
+                WriteRecord(remoteLog, remote);
+            }
+        }
+        else if (kind == "scp")
+        {
+            string capture = Environment.GetEnvironmentVariable("STACK_FAKE_CAPTURE_DIR");
+            if (!string.IsNullOrEmpty(capture))
+            {
+                List<string> positionals = new List<string>();
+                for (int index = 0; index < arguments.Length; )
+                {
+                    if (arguments[index] == "-P" || arguments[index] == "-i") { index += 2; continue; }
+                    if (arguments[index].StartsWith("-", StringComparison.Ordinal)) { index += 1; continue; }
+                    positionals.Add(arguments[index]);
+                    index += 1;
+                }
+                for (int index = 0; index + 1 < positionals.Count; index += 1)
+                {
+                    if (File.Exists(positionals[index]))
+                    {
+                        File.Copy(
+                            positionals[index],
+                            Path.Combine(capture, Path.GetFileName(positionals[index])),
+                            true
+                        );
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+}
+"""
+
+
 class PowerShellOperatorTests(unittest.TestCase):
     maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.native_fake_directory = None
+        cls.native_fake_executable = None
+        if not POWERSHELLS:
+            return
+        cls.native_fake_directory = tempfile.TemporaryDirectory()
+        cls.native_fake_executable = Path(cls.native_fake_directory.name) / "native-command-fake.exe"
+        environment = os.environ.copy()
+        environment["NATIVE_FAKE_SOURCE_B64"] = base64.b64encode(
+            NATIVE_COMMAND_FAKE.encode("utf-8")
+        ).decode("ascii")
+        environment["NATIVE_FAKE_OUTPUT"] = str(cls.native_fake_executable)
+        command = (
+            "$source=[Text.Encoding]::UTF8.GetString("
+            "[Convert]::FromBase64String($env:NATIVE_FAKE_SOURCE_B64)); "
+            "Add-Type -TypeDefinition $source -Language CSharp "
+            "-OutputAssembly $env:NATIVE_FAKE_OUTPUT -OutputType ConsoleApplication"
+        )
+        result = subprocess.run(
+            [
+                POWERSHELLS[0],
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not cls.native_fake_executable.is_file():
+            raise RuntimeError(f"native command fake compilation failed: {result.stderr}")
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.native_fake_directory is not None:
+            cls.native_fake_directory.cleanup()
 
     def setUp(self):
         if not POWERSHELLS:
@@ -217,7 +295,7 @@ class PowerShellOperatorTests(unittest.TestCase):
     def operator_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            root = base / "repository with spaces"
+            root = base / "repository with spaces;quo'te$(literal)"
             fake_dir = base / "controlled fakes"
             root.mkdir()
             fake_dir.mkdir()
@@ -243,8 +321,8 @@ class PowerShellOperatorTests(unittest.TestCase):
             run_git(root, "commit", "-m", "fixture")
             shutil.copy2(repo_path("tests/fixtures/stack.env"), root / ".env")
             (root / "ignored-note.txt").write_text("ignored local data\n", encoding="utf-8")
-            (fake_dir / "ssh.ps1").write_text(FAKE_SSH, encoding="utf-8", newline="\n")
-            (fake_dir / "scp.ps1").write_text(FAKE_SCP, encoding="utf-8", newline="\n")
+            shutil.copy2(self.native_fake_executable, fake_dir / "ssh.exe")
+            shutil.copy2(self.native_fake_executable, fake_dir / "scp.exe")
             (fake_dir / "git.ps1").write_text(FAKE_GIT, encoding="utf-8", newline="\n")
             (fake_dir / "docker.ps1").write_text(FAKE_DOCKER, encoding="utf-8", newline="\n")
             yield base, root, fake_dir
@@ -268,7 +346,7 @@ class PowerShellOperatorTests(unittest.TestCase):
         environment.update(
             {
                 "PATH": str(fake_dir),
-                "PATHEXT": ".PS1;.EXE;.CMD;.BAT",
+                "PATHEXT": ".EXE;.PS1;.CMD;.BAT",
                 "STACK_FAKE_LOG": str(log),
                 "STACK_FAKE_REMOTE_LOG": str(log.with_suffix(".remote.log")),
                 "STACK_REMOTE_ENV": str(remote_env or repo_path("tests/fixtures/remote.env")),
@@ -307,6 +385,39 @@ class PowerShellOperatorTests(unittest.TestCase):
             cwd=root,
             env=self.environment(fake_dir, log, capture, remote_env, extra_env),
             input=input_text,
+            capture_output=True,
+            text=True,
+        )
+
+    def run_script_with_prelude(
+        self,
+        shell: str,
+        root: Path,
+        fake_dir: Path,
+        script: str,
+        prelude: str,
+        *arguments: str,
+        log: Path,
+        capture: Path | None = None,
+        remote_env: Path | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        quoted_script = str(root / "scripts" / script).replace("'", "''")
+        quoted_arguments = ",".join(
+            "'" + argument.replace("'", "''") + "'" for argument in arguments
+        )
+        command = f"{prelude}; & '{quoted_script}' @({quoted_arguments}); exit $LASTEXITCODE"
+        return subprocess.run(
+            [
+                shell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            cwd=root,
+            env=self.environment(fake_dir, log, capture, remote_env, extra_env),
             capture_output=True,
             text=True,
         )
@@ -370,6 +481,10 @@ class PowerShellOperatorTests(unittest.TestCase):
                 sources, destination = positionals[:-1], positionals[-1]
                 self.assertEqual(4, len(sources))
                 self.assertTrue(all(Path(source).is_absolute() for source in sources))
+                self.assertTrue(
+                    all("repository with spaces;quo'te$(literal)" in source for source in sources),
+                    sources,
+                )
                 staging_parents = {Path(source).parent for source in sources}
                 self.assertEqual(1, len(staging_parents))
                 self.assertRegex(
@@ -461,6 +576,79 @@ class PowerShellOperatorTests(unittest.TestCase):
                 finally:
                     if junction_created and artifact_parent.exists():
                         os.rmdir(artifact_parent)
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_fails_closed_when_private_staging_acl_cannot_be_proven(self):
+        def verify(shell: str):
+            cases = (
+                (
+                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject); throw 'forced ACL-set failure' }",
+                    "could not establish a private staging ACL",
+                ),
+                (
+                    "function global:Set-Acl { [CmdletBinding()] param($LiteralPath, $AclObject) }",
+                    "private staging ACL verification failed",
+                ),
+            )
+            for prelude, message in cases:
+                with self.subTest(message=message), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    capture = base / "capture"
+                    capture.mkdir()
+                    original_secret = (root / ".env").read_bytes()
+                    result = self.run_script_with_prelude(
+                        shell,
+                        root,
+                        fake_dir,
+                        "deploy.ps1",
+                        prelude,
+                        "core",
+                        log=log,
+                        capture=capture,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+                    self.assertEqual([], list(capture.iterdir()))
+                    self.assertFalse((root / ".artifacts").exists())
+                    self.assertEqual(original_secret, (root / ".env").read_bytes())
+                    self.assertEqual([], list(base.rglob("runtime-env-*")))
+
+        self.assert_for_each_shell(verify)
+
+    def test_deploy_uses_get_file_hash_sha256_for_exact_checksum_record(self):
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                capture = base / "capture"
+                capture.mkdir()
+                digest = "a" * 64
+                prelude = (
+                    "function global:Invoke-FakeFileHash { [CmdletBinding()] "
+                    "param([string]$LiteralPath, [string]$Algorithm); "
+                    "if ($Algorithm -cne 'SHA256') { throw 'wrong hash algorithm' }; "
+                    f"[pscustomobject]@{{ Hash = '{digest}'; Path = $LiteralPath }} }}; "
+                    "Set-Alias -Name Get-FileHash -Value Invoke-FakeFileHash -Scope Global"
+                )
+                result = self.run_script_with_prelude(
+                    shell,
+                    root,
+                    fake_dir,
+                    "deploy.ps1",
+                    prelude,
+                    "core",
+                    log=log,
+                    capture=capture,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                checksum_files = list(capture.glob("*.sha256"))
+                self.assertEqual(1, len(checksum_files))
+                archive_name = checksum_files[0].name.removesuffix(".sha256")
+                self.assertEqual(
+                    f"{digest}  {archive_name}\n",
+                    checksum_files[0].read_text(encoding="ascii"),
+                )
 
         self.assert_for_each_shell(verify)
 
@@ -688,6 +876,87 @@ class PowerShellOperatorTests(unittest.TestCase):
 
         self.assert_for_each_shell(verify)
 
+    def test_configuration_dispatch_and_secrets_are_exactly_case_sensitive(self):
+        def verify(shell: str):
+            remote_content = repo_path("tests/fixtures/remote.env").read_text(encoding="utf-8")
+            remote_variants = (
+                (
+                    remote_content.replace("REMOTE_HOST=test-remote-infra-stack", "remote_host=test-remote-infra-stack"),
+                    "unknown remote.env key: remote_host",
+                ),
+                (remote_content.replace("REMOTE_PORT=2222", "REMOTE_PORT=+22"), "REMOTE_PORT must be an integer"),
+                (remote_content.replace("REMOTE_PORT=2222", "REMOTE_PORT= 22"), "REMOTE_PORT must be an integer"),
+                (remote_content.replace("REMOTE_PORT=2222", "REMOTE_PORT=22 "), "REMOTE_PORT must be an integer"),
+            )
+            for content, message in remote_variants:
+                with self.subTest(message=message), self.operator_repository() as (base, root, fake_dir):
+                    remote_env = base / "exact-remote.env"
+                    remote_env.write_text(content, encoding="utf-8", newline="\n")
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell, root, fake_dir, "stack.ps1", "status", log=log, remote_env=remote_env
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+            for arguments, message in (
+                (("UP", "core"), "unsupported stack action: UP"),
+                (("up", "Core"), "unknown profile: Core"),
+                (("logs", "App-Postgres"), "unknown log target: App-Postgres"),
+            ):
+                with self.subTest(arguments=arguments), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    result = self.run_script(shell, root, fake_dir, "stack.ps1", *arguments, log=log)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+            stack_content = repo_path("tests/fixtures/stack.env").read_text(encoding="utf-8")
+            stack_variants = (
+                (
+                    stack_content.replace("APP_POSTGRES_USER=", "app_postgres_user=", 1),
+                    "missing required .env key: APP_POSTGRES_USER",
+                ),
+                (
+                    re.sub(
+                        r"(?m)^OPENSEARCH_INITIAL_ADMIN_PASSWORD=.*$",
+                        "OPENSEARCH_INITIAL_ADMIN_PASSWORD=alllowercase1234",
+                        stack_content,
+                    ),
+                    "OPENSEARCH_INITIAL_ADMIN_PASSWORD does not meet",
+                ),
+                (
+                    re.sub(
+                        r"(?m)^OPENSEARCH_INITIAL_ADMIN_PASSWORD=.*$",
+                        "OPENSEARCH_INITIAL_ADMIN_PASSWORD=ALLUPPERCASE1234",
+                        stack_content,
+                    ),
+                    "OPENSEARCH_INITIAL_ADMIN_PASSWORD does not meet",
+                ),
+                (
+                    re.sub(
+                        r"(?m)^LANGFUSE_ENCRYPTION_KEY=.*$",
+                        "LANGFUSE_ENCRYPTION_KEY=" + "A" * 64,
+                        stack_content,
+                    ),
+                    "64 lowercase hexadecimal",
+                ),
+            )
+            for content, message in stack_variants:
+                with self.subTest(message=message), self.operator_repository() as (base, root, fake_dir):
+                    (root / ".env").write_text(content, encoding="utf-8", newline="\n")
+                    remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell, root, fake_dir, "check.ps1", "core", log=log, remote_env=remote_env
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
     def test_posix_serializer_preserves_apostrophes_and_metacharacters(self):
         arguments = ["semi;colon", "$(touch escaped)", "quo'te", "space value"]
         for shell in POWERSHELLS:
@@ -713,6 +982,54 @@ class PowerShellOperatorTests(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(arguments, shlex.split(result.stdout.strip()), repr(result.stdout))
                 self.assertFalse(marker.exists())
+
+    def test_native_windows_ssh_boundary_receives_one_serialized_remote_argument(self):
+        arguments = ["semi;colon", "$(touch escaped)", "quo'te", "space value"]
+
+        def verify(shell: str):
+            with self.operator_repository() as (base, root, fake_dir):
+                log = base / "fake.log"
+                environment = self.environment(fake_dir, log)
+                for index, argument in enumerate(arguments):
+                    environment[f"NATIVE_BOUNDARY_ARG_{index}"] = argument
+                module_path = str(root / "scripts" / "lib" / "Common.psm1").replace("'", "''")
+                remote_env = str(repo_path("tests/fixtures/remote.env")).replace("'", "''")
+                command = (
+                    f"Import-Module '{module_path}' -Force -DisableNameChecking; "
+                    f"$configuration=Import-RemoteEnv -Path '{remote_env}'; "
+                    "$values=@($env:NATIVE_BOUNDARY_ARG_0,$env:NATIVE_BOUNDARY_ARG_1,"
+                    "$env:NATIVE_BOUNDARY_ARG_2,$env:NATIVE_BOUNDARY_ARG_3); "
+                    "Invoke-SshCommand -Configuration $configuration -CommandArguments $values"
+                )
+                result = subprocess.run(
+                    [
+                        shell,
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command",
+                        command,
+                    ],
+                    cwd=root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                operation = read_operations(log)[0]
+                self.assertEqual("ssh", operation[0])
+                target_index = operation.index("tester@test-remote-infra-stack")
+                self.assertEqual("--", operation[target_index - 1])
+                self.assertEqual(1, len(operation[target_index + 1 :]), operation)
+                self.assertEqual(arguments, shlex.split(operation[target_index + 1]))
+                remote = read_operations(log.with_suffix(".remote.log"))[0]
+                self.assertEqual(
+                    ["ssh-remote", "tester@test-remote-infra-stack", operation[target_index + 1]],
+                    remote,
+                )
+                self.assertFalse((root / "escaped").exists())
+
+        self.assert_for_each_shell(verify)
 
     def test_check_validates_identity_and_exact_opensearch_render_without_remote_calls(self):
         def verify(shell: str):
@@ -764,7 +1081,7 @@ class PowerShellOperatorTests(unittest.TestCase):
     def test_check_rejects_missing_dependencies_placeholders_and_sanitizes_hooks(self):
         def verify(shell: str):
             with self.operator_repository() as (base, root, fake_dir):
-                (fake_dir / "scp.ps1").unlink()
+                (fake_dir / "scp.exe").unlink()
                 log = base / "fake.log"
                 remote_env = self.remote_env_with(base / "remote.env", REMOTE_IDENTITY_FILE="")
                 result = self.run_script(

@@ -28,12 +28,22 @@ try {
     if ($null -ne $Arguments) {
         $forwardArguments = @($Arguments)
     }
-    switch ($Action) {
-        { $_ -in @('up', 'stop') } {
+    switch -CaseSensitive ($Action) {
+        'up' {
             Assert-Profiles -Profiles $forwardArguments
             break
         }
-        { $_ -in @('down', 'status') } {
+        'stop' {
+            Assert-Profiles -Profiles $forwardArguments
+            break
+        }
+        'down' {
+            if ($forwardArguments.Count -ne 0) {
+                Throw-CommonError "$Action does not accept arguments"
+            }
+            break
+        }
+        'status' {
             if ($forwardArguments.Count -ne 0) {
                 Throw-CommonError "$Action does not accept arguments"
             }
@@ -50,7 +60,7 @@ try {
                 'clickhouse', 'minio', 'langfuse-worker', 'langfuse-web',
                 'pgadmin', 'redisinsight'
             )
-            if ($forwardArguments[0] -notin $allowedLogTargets) {
+            if ($allowedLogTargets -cnotcontains $forwardArguments[0]) {
                 Throw-CommonError "unknown log target: $($forwardArguments[0])"
             }
             break

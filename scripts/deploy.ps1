@@ -32,50 +32,114 @@ function Assert-SafeDirectory {
     }
 }
 
-function Set-PrivatePermissions {
-    param([string]$Path, [bool]$Directory)
+function Assert-PrivateWindowsAcl {
+    param(
+        [string]$Path,
+        [bool]$RequireProtected,
+        [string]$Label
+    )
+
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+        if ($ownerSid -cne $currentSid) {
+            Throw-CommonError "$Label ACL owner is not the current user"
+        }
+        if ($RequireProtected -and -not $acl.AreAccessRulesProtected) {
+            Throw-CommonError "$Label ACL still inherits permissions"
+        }
+        $rules = $acl.GetAccessRules(
+            $true,
+            $true,
+            [System.Security.Principal.SecurityIdentifier]
+        )
+        $hasFullControl = $false
+        foreach ($rule in $rules) {
+            if (
+                $rule.IdentityReference -cne $currentSid -or
+                $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow
+            ) {
+                Throw-CommonError "$Label ACL grants a non-current or non-allow principal"
+            }
+            if (
+                ($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq
+                [System.Security.AccessControl.FileSystemRights]::FullControl
+            ) {
+                $hasFullControl = $true
+            }
+        }
+        if (-not $hasFullControl) {
+            Throw-CommonError "$Label ACL does not grant current-user FullControl"
+        }
+    } catch {
+        Throw-CommonError "private staging ACL verification failed for ${Label}: $($_.Exception.Message)"
+    }
+}
+
+function Set-PrivateStagingPermissions {
+    param([string]$Path)
 
     if (Test-IsWindowsHost) {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-        if ($Directory) {
-            $security = New-Object System.Security.AccessControl.DirectorySecurity
-            $security.SetAccessRuleProtection($true, $false)
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $identity,
-                [System.Security.AccessControl.FileSystemRights]::FullControl,
-                [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-                [System.Security.AccessControl.PropagationFlags]::None,
-                [System.Security.AccessControl.AccessControlType]::Allow
-            )
-            [void]$security.AddAccessRule($rule)
-            try {
-                [System.IO.Directory]::SetAccessControl($Path, $security)
-            } catch {
-                # Restricted Windows tokens can deny ACL replacement. The owned,
-                # non-reparse-point boundary remains the mandatory safety gate.
-            }
-        } else {
-            $security = New-Object System.Security.AccessControl.FileSecurity
-            $security.SetAccessRuleProtection($true, $false)
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $identity,
-                [System.Security.AccessControl.FileSystemRights]::FullControl,
-                [System.Security.AccessControl.AccessControlType]::Allow
-            )
-            [void]$security.AddAccessRule($rule)
-            try {
-                [System.IO.File]::SetAccessControl($Path, $security)
-            } catch {
-                # Match the Bash/MINGW fallback when Windows denies chmod/ACL changes.
-            }
+        $security = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $security.SetAccessRuleProtection($true, $false)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $identity,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$security.SetAccessRule($rule)
+        try {
+            Set-Acl -LiteralPath $Path -AclObject $security -ErrorAction Stop
+        } catch {
+            Throw-CommonError "could not establish a private staging ACL: $($_.Exception.Message)"
         }
+        Assert-PrivateWindowsAcl -Path $Path -RequireProtected $true -Label 'deployment staging'
         return
     }
 
-    $mode = if ($Directory) { '0700' } else { '0600' }
-    & chmod $mode -- $Path
+    & chmod 0700 -- $Path
     if ($LASTEXITCODE -ne 0) {
-        Throw-CommonError "could not apply private mode $mode to $Path"
+        Throw-CommonError "could not apply private mode 0700 to $Path"
+    }
+}
+
+function Assert-PrivateStagingFile {
+    param(
+        [string]$Path,
+        [string]$Staging,
+        [string]$Label
+    )
+
+    $stagingRoot = [System.IO.Path]::GetFullPath($Staging).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $canonical = [System.IO.Path]::GetFullPath($Path)
+    $comparison = if (Test-IsWindowsHost) {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    $prefix = $stagingRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $canonical.StartsWith($prefix, $comparison)) {
+        Throw-CommonError "$Label escaped private deployment staging"
+    }
+    if (-not [System.IO.File]::Exists($canonical)) {
+        Throw-CommonError "$Label is not a regular file in private deployment staging"
+    }
+    $item = Get-Item -LiteralPath $canonical -Force
+    if (
+        $item.PSIsContainer -or
+        (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    ) {
+        Throw-CommonError "$Label is not a non-reparse regular staging file"
+    }
+    if (Test-IsWindowsHost) {
+        Assert-PrivateWindowsAcl -Path $canonical -RequireProtected $false -Label $Label
     }
 }
 
@@ -174,19 +238,6 @@ function Export-GzipTarEntry {
     Throw-CommonError "release archive is missing regular file: $EntryName"
 }
 
-function Get-Sha256Hex {
-    param([string]$Path)
-
-    $stream = [System.IO.File]::OpenRead($Path)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
-    } finally {
-        $sha.Dispose()
-        $stream.Dispose()
-    }
-}
-
 try {
     $scriptDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
     Import-Module ([System.IO.Path]::Combine($scriptDirectory, 'lib', 'Common.psm1')) -Force -DisableNameChecking
@@ -232,16 +283,16 @@ try {
         $createdArtifactParent = $true
     }
     Assert-SafeDirectory -Path $artifactParent -Label '.artifacts'
-    Set-PrivatePermissions -Path $artifactParent -Directory $true
 
     $operationId = [System.Guid]::NewGuid().ToString('N')
     $staging = [System.IO.Path]::Combine($artifactParent, "deploy.$operationId")
     [void][System.IO.Directory]::CreateDirectory($staging)
     Assert-SafeDirectory -Path $staging -Label 'deployment staging'
-    Set-PrivatePermissions -Path $staging -Directory $true
 
     [string[]]$remoteCleanupPaths = @()
     try {
+        Set-PrivateStagingPermissions -Path $staging
+
         $shortSha = $headOid.Substring(0, 12).ToLowerInvariant()
         $releaseName = '{0}-{1}-{2}' -f @(
             [System.DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'),
@@ -258,7 +309,7 @@ try {
             $runtimeEnvSnapshot,
             $false
         )
-        Set-PrivatePermissions -Path $runtimeEnvSnapshot -Directory $false
+        Assert-PrivateStagingFile -Path $runtimeEnvSnapshot -Staging $staging -Label 'runtime environment snapshot'
 
         $archiveArguments = @(
             '-C', $repositoryRoot,
@@ -268,18 +319,22 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Throw-CommonError "git archive failed with exit code $LASTEXITCODE"
         }
+        Assert-PrivateStagingFile -Path $archive -Staging $staging -Label 'release archive'
         Export-GzipTarEntry -Archive $archive -EntryName 'scripts/remote/deploy-release.sh' -Destination $receiverSnapshot
-        Set-PrivatePermissions -Path $receiverSnapshot -Directory $false
-        Set-PrivatePermissions -Path $archive -Directory $false
+        Assert-PrivateStagingFile -Path $receiverSnapshot -Staging $staging -Label 'release receiver snapshot'
 
-        $digest = Get-Sha256Hex -Path $archive
+        $hash = Get-FileHash -LiteralPath $archive -Algorithm SHA256
+        $digest = ([string]$hash.Hash).ToLowerInvariant()
+        if ($digest -cnotmatch '^[0-9a-f]{64}$') {
+            Throw-CommonError 'Get-FileHash returned an invalid SHA256 digest'
+        }
         $ascii = New-Object System.Text.ASCIIEncoding
         [System.IO.File]::WriteAllText(
             $checksum,
             ('{0}  {1}' -f $digest, [System.IO.Path]::GetFileName($archive)) + "`n",
             $ascii
         )
-        Set-PrivatePermissions -Path $checksum -Directory $false
+        Assert-PrivateStagingFile -Path $checksum -Staging $staging -Label 'release checksum'
 
         $currentHead = @(Invoke-GitText -Repository $repositoryRoot -Arguments @('rev-parse', '--verify', 'HEAD^{commit}'))
         if ($currentHead.Count -ne 1 -or $currentHead[0] -cne $headOid) {
