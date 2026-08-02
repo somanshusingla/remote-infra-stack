@@ -37,6 +37,11 @@ class SearchComposeTests(unittest.TestCase):
         )
         self.assertNotIn("/usr/share/opensearch/config/opensearch.yml", mounts)
 
+    def test_search_wrapper_delegates_to_opensearch_command(self):
+        model = render_compose("search")
+
+        self.assertEqual(["opensearch"], model["services"]["opensearch"].get("command"))
+
 
 class OpenSearchEntrypointTests(unittest.TestCase):
     @staticmethod

@@ -77,6 +77,7 @@ services:
       - ./config/opensearch/opensearch.yml:/usr/share/opensearch/config-template/opensearch.yml:ro
       - ./config/opensearch/docker-entrypoint.sh:/usr/local/bin/remote-infra-stack-opensearch-entrypoint:ro
     entrypoint: ["/usr/local/bin/remote-infra-stack-opensearch-entrypoint"]
+    command: ["opensearch"]
     healthcheck:
       test: ["CMD-SHELL", "curl -ksS -u admin:\"$$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://127.0.0.1:9200/_cluster/health >/dev/null"]
       interval: 10s
