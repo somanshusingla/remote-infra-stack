@@ -130,7 +130,9 @@ class BashOperatorTests(unittest.TestCase):
         environment = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("STACK_FAKE_") and not key.startswith("STACK_DOCKER_")
+            if not key.startswith("STACK_FAKE_")
+            and not key.startswith("STACK_DOCKER_")
+            and not key.startswith("STACK_GIT_")
         }
         environment.update(
             {
@@ -332,6 +334,25 @@ class BashOperatorTests(unittest.TestCase):
                 self.assertIn("must not be tracked", result.stderr)
                 self.assertEqual([], read_operations(log))
 
+    def test_deploy_rejects_tracked_repo_remote_env_with_external_override(self):
+        with self.operator_repository() as root:
+            shutil.copy2(repo_path("tests/fixtures/remote.env"), root / "remote.env")
+            run_git(root, "add", "-f", "remote.env")
+            run_git(root, "commit", "-m", "force track repository remote env")
+            log = root / "fake.log"
+
+            result = self.run_script(
+                root,
+                "deploy.sh",
+                "core",
+                log=log,
+                remote_env=repo_path("tests/fixtures/remote.env"),
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("repository remote.env must not be tracked", result.stderr)
+            self.assertEqual([], read_operations(log))
+
     def git_mutation_environment(self, root: Path, mutation: str) -> dict[str, str]:
         return {
             "STACK_GIT_MUTATION": mutation,
@@ -352,6 +373,18 @@ class BashOperatorTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("HEAD changed during deployment preparation", result.stderr)
             self.assertEqual([], read_operations(log))
+
+    def test_deploy_sanitizes_inherited_git_mutation_hooks(self):
+        with self.operator_repository() as root:
+            inherited = self.git_mutation_environment(root, "move-head")
+            marker = root / ".artifacts/move-head.marker"
+            log = root / "fake.log"
+
+            with mock.patch.dict(os.environ, inherited):
+                result = self.run_script(root, "deploy.sh", "core", log=log)
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse(marker.exists())
 
     def test_deploy_rejects_receiver_edit_before_remote_calls(self):
         with self.operator_repository() as root:
@@ -690,7 +723,24 @@ class BashOperatorTests(unittest.TestCase):
                 root, "check.sh", "core", log=log, remote_env=remote_env
             )
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("identity file is not readable", result.stderr)
+            self.assertIn("identity file must be a readable regular file", result.stderr)
+            self.assertEqual([], read_operations(log))
+
+    def test_check_rejects_readable_identity_directory(self):
+        with self.operator_repository() as root:
+            identity_directory = root / "identity-directory"
+            identity_directory.mkdir()
+            remote_env = self.remote_env_with(
+                root, REMOTE_IDENTITY_FILE=bash_path(identity_directory)
+            )
+            log = root / "fake.log"
+
+            result = self.run_script(
+                root, "check.sh", "core", log=log, remote_env=remote_env
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("identity file must be a readable regular file", result.stderr)
             self.assertEqual([], read_operations(log))
 
     def test_check_sanitizes_inherited_fake_and_docker_hooks(self):

@@ -38,7 +38,8 @@ fi
 
 require_clean_git_head "$repo_root"
 reject_tracked_file "$repo_root" "$repo_root/.env" ".env"
-reject_tracked_file "$repo_root" "$remote_env_file" "remote.env"
+reject_tracked_file "$repo_root" "$repo_root/remote.env" "repository remote.env"
+reject_tracked_file "$repo_root" "$remote_env_file" "selected remote.env"
 validate_stack_env "$repo_root/.env" "$repo_root/.env.example"
 head_oid=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}')
 [[ "$head_oid" =~ ^[0-9a-fA-F]{40,64}$ ]] || common_die "could not capture the full Git HEAD object ID"
@@ -107,7 +108,8 @@ current_head=$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}')
 [[ "$current_head" == "$head_oid" ]] || common_die "HEAD changed during deployment preparation"
 require_clean_git_head "$repo_root"
 reject_tracked_file "$repo_root" "$repo_root/.env" ".env"
-reject_tracked_file "$repo_root" "$remote_env_file" "remote.env"
+reject_tracked_file "$repo_root" "$repo_root/remote.env" "repository remote.env"
+reject_tracked_file "$repo_root" "$remote_env_file" "selected remote.env"
 
 remote_incoming=$REMOTE_ROOT/incoming
 remote_archive=$remote_incoming/$(basename -- "$archive")

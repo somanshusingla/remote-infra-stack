@@ -15,8 +15,9 @@ done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
   common_die "required command is unavailable: sha256sum or shasum"
 fi
-if [[ -n "$REMOTE_IDENTITY_FILE" && ! -r "$REMOTE_IDENTITY_FILE" ]]; then
-  common_die "configured SSH identity file is not readable: $REMOTE_IDENTITY_FILE"
+if [[ -n "$REMOTE_IDENTITY_FILE" &&
+   (! -f "$REMOTE_IDENTITY_FILE" || ! -r "$REMOTE_IDENTITY_FILE") ]]; then
+  common_die "configured SSH identity file must be a readable regular file: $REMOTE_IDENTITY_FILE"
 fi
 
 validate_stack_env "$repo_root/.env" "$repo_root/.env.example"
