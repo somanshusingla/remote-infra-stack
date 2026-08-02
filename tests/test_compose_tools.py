@@ -72,7 +72,7 @@ class ToolComposeTests(unittest.TestCase):
         redisinsight = redisinsight_service["environment"]
 
         self.assertEqual("5050", pgadmin["PGADMIN_LISTEN_PORT"])
-        self.assertEqual("admin@example.local", pgadmin["PGADMIN_DEFAULT_EMAIL"])
+        self.assertEqual("admin@example.com", pgadmin["PGADMIN_DEFAULT_EMAIL"])
         self.assertIn("PGADMIN_DEFAULT_PASSWORD", pgadmin)
         self.assertNotIn("APP_POSTGRES_PASSWORD", pgadmin)
 

@@ -19,7 +19,7 @@ class EnvGenerationTests(unittest.TestCase):
         self.assertNotIn("GENERATED_BY_INIT_ENV", generated.values())
         self.assertRegex(generated["LANGFUSE_ENCRYPTION_KEY"], r"^[0-9a-f]{64}$")
         self.assertEqual("app", generated["APP_POSTGRES_USER"])
-        self.assertEqual("admin@example.local", generated["PGADMIN_DEFAULT_EMAIL"])
+        self.assertEqual("admin@example.com", generated["PGADMIN_DEFAULT_EMAIL"])
 
         opensearch_password = generated["OPENSEARCH_INITIAL_ADMIN_PASSWORD"]
         self.assertEqual(32, len(opensearch_password))
