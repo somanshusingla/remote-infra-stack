@@ -69,6 +69,7 @@ class RemoteRuntimeTests(unittest.TestCase):
             "--env-file", shell_path(repo_path("versions.env")),
             "--env-file", shell_path(self.root / "runtime/.env"),
             "--project-directory", shell_path(repo_path(".")),
+            "--file", shell_path(repo_path("compose.yaml")),
             "--profile", "core", "--profile", "vector", "config", "--quiet",
         ], self.docker_calls()[0])
 

@@ -8,7 +8,9 @@ die() {
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
+release_files_dir=${STACK_RELEASE_HELD_DIR:-$release_dir}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
+runtime_env=${STACK_RUNTIME_ENV_FILE:-$stack_root/runtime/.env}
 
 profiles=()
 declare -A selected=()
@@ -42,9 +44,10 @@ fi
 
 command=(
   "$docker_bin" compose
-  --env-file "$release_dir/versions.env"
-  --env-file "$stack_root/runtime/.env"
+  --env-file "$release_files_dir/versions.env"
+  --env-file "$runtime_env"
   --project-directory "$release_dir"
+  --file "$release_files_dir/compose.yaml"
 )
 for profile in "${profiles[@]}"; do
   command+=(--profile "$profile")

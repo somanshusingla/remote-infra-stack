@@ -10,6 +10,32 @@ if [[ -n "${STACK_DOCKER_LOG:-}" ]]; then
 fi
 
 joined=" $* "
+project_directory=
+arguments=("$@")
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  if [[ "${arguments[$index]}" == --project-directory && $((index + 1)) -lt ${#arguments[@]} ]]; then
+    project_directory=${arguments[$((index + 1))]}
+    break
+  fi
+done
+if [[ -n "${STACK_FAKE_RENDER_LOG:-}" && "$joined" == *" config "* ]]; then
+  printf '%s\n%s\n%s\n' \
+    "$project_directory" \
+    "$project_directory/config/opensearch/opensearch.yml" \
+    "$project_directory/config/opensearch/docker-entrypoint.sh" \
+    >>"$STACK_FAKE_RENDER_LOG"
+fi
+if [[ -n "${STACK_FAKE_SWAP_RELEASE:-}" && ! -e "${STACK_FAKE_SWAP_MARKER:-}" ]]; then
+  mv -- "$STACK_FAKE_SWAP_RELEASE" "$STACK_FAKE_SWAP_RELEASE.verified"
+  mkdir -p -- "$STACK_FAKE_SWAP_RELEASE/scripts/remote"
+  cat >"$STACK_FAKE_SWAP_RELEASE/scripts/remote/compose.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+: >"$STACK_FAKE_TAMPER_MARKER"
+exit 97
+SCRIPT
+  chmod 0755 -- "$STACK_FAKE_SWAP_RELEASE/scripts/remote/compose.sh"
+  : >"$STACK_FAKE_SWAP_MARKER"
+fi
 if [[ "$joined" == *" --config - "* ]]; then
   cat >/dev/null
 fi

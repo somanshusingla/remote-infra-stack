@@ -9,6 +9,7 @@ die() {
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
+runtime_env=${STACK_RUNTIME_ENV_FILE:-$stack_root/runtime/.env}
 compose_script=$script_dir/compose.sh
 curl_bin=${CURL_BIN:-curl}
 
@@ -58,7 +59,7 @@ http_get() {
 
 env_value() {
   local key=$1
-  local file=$stack_root/runtime/.env
+  local file=$runtime_env
   [[ -f "$file" && ! -L "$file" ]] || die "runtime environment file is unavailable"
   awk -F= -v wanted="$key" '$1 == wanted { sub(/^[^=]*=/, ""); print; found=1; exit } END { if (!found) exit 1 }' "$file"
 }

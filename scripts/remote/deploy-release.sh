@@ -74,11 +74,27 @@ open_root_child runtime runtime_fd
 open_root_child releases releases_fd
 runtime_path=/proc/self/fd/$runtime_fd
 releases_path=/proc/self/fd/$releases_fd
+runtime_host=$(realpath -e -- "$runtime_path")
+releases_host=$(realpath -e -- "$releases_path")
+[[ "$runtime_host" == "$root/"* ]] || die "held runtime directory escaped the stack root"
+[[ "$releases_host" == "$root/"* ]] || die "held releases directory escaped the stack root"
 
 # The validated runtime directory itself is the lock object. This cannot follow or
 # truncate a caller-controlled deploy.lock path and the descriptor remains open
 # until the complete transaction exits.
 flock -n "$runtime_fd" || die "another deployment is already in progress"
+
+runtime_env_entry=$runtime_path/.env
+[[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
+  die "runtime/.env must be a regular non-symlink file"
+runtime_env_host=$(realpath -e -- "$runtime_env_entry")
+[[ "$runtime_env_host" == "$runtime_host/.env" ]] ||
+  die "runtime/.env escaped the held runtime directory"
+exec {runtime_env_fd}<"$runtime_env_entry"
+runtime_env_held=/proc/self/fd/$runtime_env_fd
+[[ -f "$runtime_env_held" && "$(realpath -e -- "$runtime_env_held")" == "$runtime_env_host" ]] ||
+  die "could not hold the validated runtime environment"
+chmod 0600 -- "$runtime_env_held"
 
 inside_root() {
   local candidate=$1
@@ -115,9 +131,11 @@ trap cleanup EXIT
 # Every subsequent operation uses only these private copies.
 staged_archive=$staging/archive.tar.gz
 staged_checksum=$staging/archive.sha256
+staged_runtime_env=$staging/runtime.env
+"${CP_BIN:-cp}" -- "$runtime_env_held" "$staged_runtime_env"
 "${CP_BIN:-cp}" -- "$archive" "$staged_archive"
 "${CP_BIN:-cp}" -- "$checksum" "$staged_checksum"
-chmod 0600 -- "$staged_archive" "$staged_checksum"
+chmod 0600 -- "$staged_archive" "$staged_checksum" "$staged_runtime_env"
 
 mapfile -t checksum_lines <"$staged_checksum"
 ((${#checksum_lines[@]} == 1)) || die "checksum file must contain exactly one record"
@@ -132,11 +150,6 @@ actual_digest=$("${SHA256SUM_BIN:-sha256sum}" -- "$staged_archive" | awk '{ prin
 [[ "$actual_digest" =~ ^[[:xdigit:]]{64}$ ]] || die "could not calculate staged archive digest"
 actual_digest=${actual_digest,,}
 [[ "$actual_digest" == "$expected_digest" ]] || die "archive checksum verification failed"
-
-runtime_env=$runtime_path/.env
-[[ -f "$runtime_env" && ! -L "$runtime_env" ]] ||
-  die "runtime/.env must be a regular non-symlink file"
-chmod 0600 -- "$runtime_env"
 
 member_list=$staging/members.list
 member_types=$staging/members.verbose
@@ -178,8 +191,10 @@ for required in compose.yaml versions.env scripts/remote/compose.sh scripts/remo
   [[ -f "$extracted/$required" && ! -L "$extracted/$required" ]] ||
     die "release is missing regular file: $required"
 done
+(umask 077; printf '%s\n' "$actual_digest" >"$extracted/.release-digest")
 
 release_dir=$releases_path/$release_name
+move_bin=${MV_BIN:-mv}
 if [[ -e "$release_dir" || -L "$release_dir" ]]; then
   [[ -d "$release_dir" && ! -L "$release_dir" ]] || die "release collision is not a real directory"
   digest_marker=$release_dir/.release-digest
@@ -187,12 +202,25 @@ if [[ -e "$release_dir" || -L "$release_dir" ]]; then
     die "release collision lacks a trusted digest marker"
   stored_digest=$(<"$digest_marker")
   [[ "$stored_digest" == "$actual_digest" ]] || die "release collision has a different archive digest"
-  rm -rf -- "$extracted"
+  if [[ -e "$release_dir/.successful" || -L "$release_dir/.successful" ]]; then
+    [[ -f "$release_dir/.successful" && ! -L "$release_dir/.successful" ]] ||
+      die "successful release collision has an unsafe marker"
+    die "successful release collision is preserved and cannot be redeployed"
+  fi
+  if [[ -L "$root_path/current" ]] &&
+    [[ "$(realpath -m -- "$root_path/current")" == "$(realpath -e -- "$release_dir")" ]]; then
+    die "current release collision is preserved and cannot be replaced"
+  fi
+  retained_backup=$staging/retained-release
+  "$move_bin" -T -- "$release_dir" "$retained_backup"
+  if ! "$move_bin" -T -- "$extracted" "$release_dir"; then
+    if [[ ! -e "$release_dir" && -d "$retained_backup" ]]; then
+      "$move_bin" -T -- "$retained_backup" "$release_dir" || true
+    fi
+    die "could not atomically install the freshly verified retry"
+  fi
 else
-  mv -T -- "$extracted" "$release_dir"
-  digest_temp=$release_dir/.release-digest.$$
-  (umask 077; printf '%s\n' "$actual_digest" >"$digest_temp")
-  mv -T -- "$digest_temp" "$release_dir/.release-digest"
+  "$move_bin" -T -- "$extracted" "$release_dir"
 fi
 
 if [[ -e "$root_path/current" && ! -L "$root_path/current" ]]; then
@@ -203,14 +231,37 @@ if [[ -e "$release_dir/.successful" || -L "$release_dir/.successful" ]]; then
     die "successful marker must be a regular file"
 fi
 
-export STACK_ROOT=$root_path
-export STACK_RELEASE_DIR=$release_dir
-compose_script=$release_dir/scripts/remote/compose.sh
-health_script=$release_dir/scripts/remote/health.sh
+exec {release_fd}<"$release_dir"
+release_held=/proc/self/fd/$release_fd
+[[ -d "$release_held" ]] || die "could not hold the freshly verified release"
+release_host=$(realpath -e -- "$release_held")
+[[ "$release_host" == "$releases_host/$release_name" ]] ||
+  die "release host path does not match the held releases directory"
+release_identity=$(stat -Lc '%d:%i' -- "$release_held")
+verify_release_identity() {
+  local host_identity
+  [[ -d "$release_host" && ! -L "$release_host" ]] ||
+    die "canonical release path no longer names a real directory"
+  host_identity=$(stat -Lc '%d:%i' -- "$release_host")
+  [[ "$host_identity" == "$release_identity" ]] ||
+    die "canonical release path no longer names the held verified release"
+}
+
+export STACK_ROOT=$root
+export STACK_RELEASE_DIR=$release_host
+export STACK_RELEASE_HELD_DIR=$release_held
+export STACK_RUNTIME_ENV_FILE=$staged_runtime_env
+compose_script=$release_held/scripts/remote/compose.sh
+health_script=$release_held/scripts/remote/health.sh
+verify_release_identity
 bash "$compose_script" "${profiles[@]}" -- config --quiet
+verify_release_identity
 bash "$compose_script" "${profiles[@]}" -- pull
+verify_release_identity
 bash "$compose_script" "${profiles[@]}" -- up -d --wait
+verify_release_identity
 bash "$health_script" "${profiles[@]}"
+verify_release_identity
 
 if [[ ! -e "$release_dir/.successful" ]]; then
   success_temp=$release_dir/.successful.$$
@@ -219,6 +270,7 @@ if [[ ! -e "$release_dir/.successful" ]]; then
 fi
 current_temp=$root_path/.current.$release_name.$$
 ln -sfn -- "releases/$release_name" "$current_temp"
+verify_release_identity
 mv -Tf -- "$current_temp" "$root_path/current"
 current_temp=
 
