@@ -198,6 +198,19 @@ esac
             self.assertGreater(next_position, position, fragment)
             position = next_position
 
+    def assert_real_install_sysctl_verification(self, source: str):
+        real_install_marker = "  exit 0\nfi\n\nrun_root docker version\n"
+        self.assertEqual(1, source.count(real_install_marker))
+        real_install = source.split(real_install_marker, 1)[1]
+        self.assertIn(
+            "run_root systemctl is-active --quiet docker || "
+            'die "Docker service is not active"\n'
+            "verify_sysctl_setting vm.max_map_count 262144\n"
+            "verify_sysctl_setting net.ipv4.ip_forward 1\n"
+            "printf 'Docker bootstrap complete",
+            real_install,
+        )
+
     def test_supported_and_future_ubuntu_are_repository_gated(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
@@ -350,6 +363,24 @@ esac
                     )
                     with self.assertRaises(AssertionError):
                         self.assert_sysctl_install_plan(result.stdout)
+
+    def test_real_install_verifier_rejects_wrong_forwarding_expectation(self):
+        original = repo_path("scripts/remote/bootstrap-host.sh").read_text(
+            encoding="utf-8"
+        )
+        verifier = "verify_sysctl_setting net.ipv4.ip_forward 1"
+        prefix, separator, suffix = original.rpartition(verifier)
+        self.assertEqual(verifier, separator)
+        self.assertIn(
+            verifier,
+            prefix,
+            "dry-run verifier must remain independently covered",
+        )
+
+        self.assert_real_install_sysctl_verification(original)
+        wrong_real_verifier = prefix + verifier[:-1] + "0" + suffix
+        with self.assertRaises(AssertionError):
+            self.assert_real_install_sysctl_verification(wrong_real_verifier)
 
 
 if __name__ == "__main__":

@@ -90,10 +90,11 @@ egress. It applies and verifies both settings. It is idempotent. Re-run it after
 rebuilding the VM or when you need to repair prerequisites. Deployment preflight
 refuses to start services while IPv4 forwarding is disabled.
 
-Kernel IPv4 forwarding enables Docker bridge egress; it does not publish the stack's
-ports. The repository leaves iptables/UFW, Docker daemon networking, and cloud
-IP-forwarding settings unchanged. Keep every Compose publication on `127.0.0.1` and
-allow only SSH through the cloud firewall.
+`net.ipv4.ip_forward=1` is a host-global IPv4 routing capability. It enables Docker
+bridge egress but does not publish the stack's ports: they remain loopback-only behind
+an SSH-only cloud firewall. On a multi-NIC host or one with a custom host firewall,
+routing and firewall policy are the operator responsibility. The repository leaves
+iptables/UFW, Docker daemon networking, and cloud IP-forwarding unchanged.
 
 ### 4. Deploy the selected profiles
 
@@ -229,10 +230,11 @@ egress. It applies and verifies both settings. It is idempotent. Re-run it after
 rebuilding the VM or when you need to repair prerequisites. Deployment preflight
 refuses to start services while IPv4 forwarding is disabled.
 
-Kernel IPv4 forwarding enables Docker bridge egress; it does not publish the stack's
-ports. The repository leaves iptables/UFW, Docker daemon networking, and cloud
-IP-forwarding settings unchanged. Keep every Compose publication on `127.0.0.1` and
-allow only SSH through the cloud firewall.
+`net.ipv4.ip_forward=1` is a host-global IPv4 routing capability. It enables Docker
+bridge egress but does not publish the stack's ports: they remain loopback-only behind
+an SSH-only cloud firewall. On a multi-NIC host or one with a custom host firewall,
+routing and firewall policy are the operator responsibility. The repository leaves
+iptables/UFW, Docker daemon networking, and cloud IP-forwarding unchanged.
 
 ### 4. Deploy the selected profiles
 

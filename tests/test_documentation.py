@@ -91,6 +91,39 @@ class DocumentationContractTests(unittest.TestCase):
 
         self.assertIn("OpenSSL", requirements)
 
+    def test_bootstrap_guides_disclose_host_global_forwarding_responsibility(self):
+        readme = self.read_document("README.md")
+        operations = self.read_document("docs/operations.md")
+        readme_requirements = readme[: readme.index("## Quick start")]
+        operation_sections = []
+        position = 0
+        marker = "### 3. Bootstrap the existing VM"
+        while True:
+            start = operations.find(marker, position)
+            if start == -1:
+                break
+            end = operations.index("### 4. Deploy the selected profiles", start)
+            operation_sections.append(operations[start:end])
+            position = end
+
+        self.assertEqual(2, len(operation_sections))
+        for name, section in (
+            ("README requirements", readme_requirements),
+            ("Bash operations", operation_sections[0]),
+            ("PowerShell operations", operation_sections[1]),
+        ):
+            with self.subTest(section=name):
+                for disclosure in (
+                    "`net.ipv4.ip_forward=1`",
+                    "host-global IPv4 routing capability",
+                    "loopback-only",
+                    "SSH-only cloud firewall",
+                    "multi-NIC",
+                    "custom host firewall",
+                    "operator responsibility",
+                ):
+                    self.assertIn(disclosure, section)
+
     def test_readme_lists_every_local_tunnel_endpoint(self):
         readme = self.read_document("README.md")
 

@@ -54,6 +54,11 @@ monitor the VM, and resize the host or raise individual limits when real workloa
 require it. The CPU-only Ollama services can take minutes to answer on general-purpose
 cloud CPUs, especially while `gemma4:e4b` is loading.
 
+`net.ipv4.ip_forward=1` is a host-global IPv4 routing capability, not a container-only
+setting. Stack ports remain loopback-only behind an SSH-only cloud firewall. On a
+multi-NIC host or one with a custom host firewall, routing and firewall policy are the
+operator responsibility.
+
 Ubuntu 26.04 bootstrap and pinned `linux/amd64` image manifests were verified on a
 minimal GCP VM; the sanitized evidence is in
 [docs/verification/task-7-ubuntu-bootstrap.md](docs/verification/task-7-ubuntu-bootstrap.md).
