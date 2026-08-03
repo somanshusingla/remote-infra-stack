@@ -14,7 +14,9 @@ function Test-RemoteKeyAllowed {
 
     return @(
         'REMOTE_HOST', 'REMOTE_USER', 'REMOTE_PORT', 'REMOTE_IDENTITY_FILE', 'REMOTE_ROOT',
-        'LOCAL_POSTGRES_PORT', 'LOCAL_REDIS_PORT', 'LOCAL_CHROMA_PORT',
+        'LOCAL_POSTGRES_PORT', 'LOCAL_REDIS_PORT', 'LOCAL_CHROMA_PORT', 'LOCAL_CHROMA_ADMIN_PORT',
+        'LOCAL_DYNAMODB_PORT', 'LOCAL_DYNAMODB_ADMIN_PORT', 'LOCAL_OLLAMA_LLM_PORT',
+        'LOCAL_OLLAMA_EMBEDDING_PORT',
         'LOCAL_OPENSEARCH_PORT', 'LOCAL_OPENSEARCH_DASHBOARDS_PORT',
         'LOCAL_LANGFUSE_PORT', 'LOCAL_PGADMIN_PORT', 'LOCAL_REDISINSIGHT_PORT',
         'LOCAL_MINIO_API_PORT', 'LOCAL_MINIO_CONSOLE_PORT'
@@ -53,7 +55,9 @@ function Import-RemoteEnv {
 
     $requiredKeys = @(
         'REMOTE_HOST', 'REMOTE_USER', 'REMOTE_PORT', 'REMOTE_IDENTITY_FILE', 'REMOTE_ROOT',
-        'LOCAL_POSTGRES_PORT', 'LOCAL_REDIS_PORT', 'LOCAL_CHROMA_PORT',
+        'LOCAL_POSTGRES_PORT', 'LOCAL_REDIS_PORT', 'LOCAL_CHROMA_PORT', 'LOCAL_CHROMA_ADMIN_PORT',
+        'LOCAL_DYNAMODB_PORT', 'LOCAL_DYNAMODB_ADMIN_PORT', 'LOCAL_OLLAMA_LLM_PORT',
+        'LOCAL_OLLAMA_EMBEDDING_PORT',
         'LOCAL_OPENSEARCH_PORT', 'LOCAL_OPENSEARCH_DASHBOARDS_PORT',
         'LOCAL_LANGFUSE_PORT', 'LOCAL_PGADMIN_PORT', 'LOCAL_REDISINSIGHT_PORT',
         'LOCAL_MINIO_API_PORT', 'LOCAL_MINIO_CONSOLE_PORT'
@@ -127,7 +131,7 @@ function Assert-Profiles {
     }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([System.StringComparer]::Ordinal)
     foreach ($profile in $Profiles) {
-        if (@('core', 'vector', 'search', 'observability', 'tools') -cnotcontains $profile) {
+        if (@('core', 'vector', 'search', 'observability', 'tools', 'dynamodb', 'inference') -cnotcontains $profile) {
             Throw-CommonError "unknown profile: $profile"
         }
         if (-not $seen.Add($profile)) {

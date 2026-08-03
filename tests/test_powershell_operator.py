@@ -917,6 +917,7 @@ class PowerShellOperatorTests(unittest.TestCase):
                 (("up", "tools"), "tools requires core"),
                 (("up", "core", "core"), "duplicate profile"),
                 (("stop", "unknown"), "unknown profile"),
+                (("stop", "DynamoDB"), "unknown profile: DynamoDB"),
                 (("logs", "core;id"), "unknown log target"),
                 (("logs", "app-postgres'bad"), "unknown log target"),
             ):
@@ -965,6 +966,28 @@ class PowerShellOperatorTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn(message, result.stderr)
                     self.assertEqual([], read_operations(log))
+
+        self.assert_for_each_shell(verify)
+
+    def test_stack_forwards_data_and_inference_log_targets_unchanged(self):
+        def verify(shell: str):
+            for target in (
+                "dynamodb", "inference", "chroma-admin", "dynamodb-local",
+                "dynamodb-admin", "ollama-llm", "ollama-embedding",
+            ):
+                with self.subTest(target=target), self.operator_repository() as (base, root, fake_dir):
+                    log = base / "fake.log"
+                    result = self.run_script(
+                        shell, root, fake_dir, "stack.ps1", "logs", target, log=log
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(
+                        [
+                            "bash", "remote-infra-stack/current/scripts/remote/stack.sh",
+                            "logs", target,
+                        ],
+                        shlex.split(read_operations(log)[0][-1]),
+                    )
 
         self.assert_for_each_shell(verify)
 

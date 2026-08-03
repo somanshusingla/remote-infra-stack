@@ -83,6 +83,11 @@ validate_profiles "$@"
 normalize_local_port LOCAL_POSTGRES_PORT "$LOCAL_POSTGRES_PORT" LOCAL_POSTGRES_PORT
 normalize_local_port LOCAL_REDIS_PORT "$LOCAL_REDIS_PORT" LOCAL_REDIS_PORT
 normalize_local_port LOCAL_CHROMA_PORT "$LOCAL_CHROMA_PORT" LOCAL_CHROMA_PORT
+normalize_local_port LOCAL_CHROMA_ADMIN_PORT "$LOCAL_CHROMA_ADMIN_PORT" LOCAL_CHROMA_ADMIN_PORT
+normalize_local_port LOCAL_DYNAMODB_PORT "$LOCAL_DYNAMODB_PORT" LOCAL_DYNAMODB_PORT
+normalize_local_port LOCAL_DYNAMODB_ADMIN_PORT "$LOCAL_DYNAMODB_ADMIN_PORT" LOCAL_DYNAMODB_ADMIN_PORT
+normalize_local_port LOCAL_OLLAMA_LLM_PORT "$LOCAL_OLLAMA_LLM_PORT" LOCAL_OLLAMA_LLM_PORT
+normalize_local_port LOCAL_OLLAMA_EMBEDDING_PORT "$LOCAL_OLLAMA_EMBEDDING_PORT" LOCAL_OLLAMA_EMBEDDING_PORT
 normalize_local_port LOCAL_OPENSEARCH_PORT "$LOCAL_OPENSEARCH_PORT" LOCAL_OPENSEARCH_PORT
 normalize_local_port \
   LOCAL_OPENSEARCH_DASHBOARDS_PORT "$LOCAL_OPENSEARCH_DASHBOARDS_PORT" \
@@ -96,6 +101,8 @@ normalize_local_port LOCAL_REDISINSIGHT_PORT "$LOCAL_REDISINSIGHT_PORT" LOCAL_RE
 
 selected_core=false
 selected_vector=false
+selected_dynamodb=false
+selected_inference=false
 selected_search=false
 selected_observability=false
 selected_tools=false
@@ -111,6 +118,7 @@ if [[ "$selected_core" == true ]]; then
 fi
 if [[ "$selected_vector" == true ]]; then
   add_forward "$LOCAL_CHROMA_PORT" 18000
+  add_forward "$LOCAL_CHROMA_ADMIN_PORT" 18001
 fi
 if [[ "$selected_search" == true ]]; then
   add_forward "$LOCAL_OPENSEARCH_PORT" 9200
@@ -124,6 +132,14 @@ fi
 if [[ "$selected_tools" == true ]]; then
   add_forward "$LOCAL_PGADMIN_PORT" 5050
   add_forward "$LOCAL_REDISINSIGHT_PORT" 5540
+fi
+if [[ "$selected_dynamodb" == true ]]; then
+  add_forward "$LOCAL_DYNAMODB_PORT" 18002
+  add_forward "$LOCAL_DYNAMODB_ADMIN_PORT" 18003
+fi
+if [[ "$selected_inference" == true ]]; then
+  add_forward "$LOCAL_OLLAMA_LLM_PORT" 11440
+  add_forward "$LOCAL_OLLAMA_EMBEDDING_PORT" 11441
 fi
 
 check_local_ports_available

@@ -22,8 +22,9 @@ case "$action" in
   logs)
     (($# == 1)) || common_die "logs requires one profile or service target"
     case "$1" in
-      core|vector|search|observability|tools|\
-        app-postgres|app-redis|chroma|opensearch|opensearch-dashboards|\
+      core|vector|search|observability|tools|dynamodb|inference|\
+        app-postgres|app-redis|chroma|chroma-admin|dynamodb-local|dynamodb-admin|\
+        ollama-llm|ollama-embedding|opensearch|opensearch-dashboards|\
         langfuse-postgres|langfuse-redis|clickhouse|minio|langfuse-worker|\
         langfuse-web|pgadmin|redisinsight)
         ;;

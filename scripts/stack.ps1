@@ -54,8 +54,9 @@ try {
                 Throw-CommonError 'logs requires one profile or service target'
             }
             $allowedLogTargets = @(
-                'core', 'vector', 'search', 'observability', 'tools',
-                'app-postgres', 'app-redis', 'chroma', 'opensearch',
+                'core', 'vector', 'search', 'observability', 'tools', 'dynamodb', 'inference',
+                'app-postgres', 'app-redis', 'chroma', 'chroma-admin', 'dynamodb-local',
+                'dynamodb-admin', 'ollama-llm', 'ollama-embedding', 'opensearch',
                 'opensearch-dashboards', 'langfuse-postgres', 'langfuse-redis',
                 'clickhouse', 'minio', 'langfuse-worker', 'langfuse-web',
                 'pgadmin', 'redisinsight'

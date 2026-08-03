@@ -78,6 +78,11 @@ try {
         'LOCAL_POSTGRES_PORT',
         'LOCAL_REDIS_PORT',
         'LOCAL_CHROMA_PORT',
+        'LOCAL_CHROMA_ADMIN_PORT',
+        'LOCAL_DYNAMODB_PORT',
+        'LOCAL_DYNAMODB_ADMIN_PORT',
+        'LOCAL_OLLAMA_LLM_PORT',
+        'LOCAL_OLLAMA_EMBEDDING_PORT',
         'LOCAL_OPENSEARCH_PORT',
         'LOCAL_OPENSEARCH_DASHBOARDS_PORT',
         'LOCAL_LANGFUSE_PORT',
@@ -101,6 +106,7 @@ try {
         [pscustomobject]@{ Profile = 'core'; Key = 'LOCAL_POSTGRES_PORT'; Remote = 15432 },
         [pscustomobject]@{ Profile = 'core'; Key = 'LOCAL_REDIS_PORT'; Remote = 16379 },
         [pscustomobject]@{ Profile = 'vector'; Key = 'LOCAL_CHROMA_PORT'; Remote = 18000 },
+        [pscustomobject]@{ Profile = 'vector'; Key = 'LOCAL_CHROMA_ADMIN_PORT'; Remote = 18001 },
         [pscustomobject]@{ Profile = 'search'; Key = 'LOCAL_OPENSEARCH_PORT'; Remote = 9200 },
         [pscustomobject]@{
             Profile = 'search'
@@ -123,7 +129,11 @@ try {
             Remote = 9091
         },
         [pscustomobject]@{ Profile = 'tools'; Key = 'LOCAL_PGADMIN_PORT'; Remote = 5050 },
-        [pscustomobject]@{ Profile = 'tools'; Key = 'LOCAL_REDISINSIGHT_PORT'; Remote = 5540 }
+        [pscustomobject]@{ Profile = 'tools'; Key = 'LOCAL_REDISINSIGHT_PORT'; Remote = 5540 },
+        [pscustomobject]@{ Profile = 'dynamodb'; Key = 'LOCAL_DYNAMODB_PORT'; Remote = 18002 },
+        [pscustomobject]@{ Profile = 'dynamodb'; Key = 'LOCAL_DYNAMODB_ADMIN_PORT'; Remote = 18003 },
+        [pscustomobject]@{ Profile = 'inference'; Key = 'LOCAL_OLLAMA_LLM_PORT'; Remote = 11440 },
+        [pscustomobject]@{ Profile = 'inference'; Key = 'LOCAL_OLLAMA_EMBEDDING_PORT'; Remote = 11441 }
     )
 
     $seenLocalPorts = New-Object 'System.Collections.Generic.HashSet[int]'

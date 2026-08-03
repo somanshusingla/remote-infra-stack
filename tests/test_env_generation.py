@@ -10,6 +10,18 @@ from tests.helpers import read_env, read_env_keys, repo_path
 
 
 class EnvGenerationTests(unittest.TestCase):
+    def test_example_declares_data_and_inference_resource_defaults(self):
+        """Catches a missing or wrong non-secret operator default."""
+        expected = read_env(repo_path(".env.example"))
+
+        self.assertEqual("512m", expected["CHROMA_ADMIN_MEMORY"])
+        self.assertEqual("1g", expected["DYNAMODB_MEMORY"])
+        self.assertEqual("512m", expected["DYNAMODB_ADMIN_MEMORY"])
+        self.assertEqual("14g", expected["OLLAMA_LLM_MEMORY"])
+        self.assertEqual("2g", expected["OLLAMA_EMBEDDING_MEMORY"])
+        self.assertEqual("8192", expected["OLLAMA_CONTEXT_LENGTH"])
+        self.assertEqual("5m", expected["OLLAMA_KEEP_ALIVE"])
+
     def assert_contract(self, output: Path) -> None:
         generated = read_env(output)
         expected = read_env(repo_path(".env.example"))

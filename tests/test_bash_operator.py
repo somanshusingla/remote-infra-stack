@@ -562,6 +562,7 @@ class BashOperatorTests(unittest.TestCase):
             (("up", "tools"), "tools requires core"),
             (("up", "core", "core"), "duplicate profile"),
             (("stop", "unknown"), "unknown profile"),
+            (("stop", "DynamoDB"), "unknown profile: DynamoDB"),
         ):
             with self.subTest(arguments=arguments), self.operator_repository() as root:
                 log = root / "fake.log"
@@ -569,6 +570,24 @@ class BashOperatorTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn(message, result.stderr)
                 self.assertEqual([], read_operations(log))
+
+    def test_stack_forwards_data_and_inference_log_targets_unchanged(self):
+        for target in (
+            "dynamodb", "inference", "chroma-admin", "dynamodb-local",
+            "dynamodb-admin", "ollama-llm", "ollama-embedding",
+        ):
+            with self.subTest(target=target), self.operator_repository() as root:
+                log = root / "fake.log"
+                result = self.run_script(root, "stack.sh", "logs", target, log=log)
+                self.assertEqual(0, result.returncode, result.stderr)
+                remote = read_operations(log.with_suffix(".remote.log"))[0]
+                self.assertEqual(
+                    [
+                        "bash", "remote-infra-stack/current/scripts/remote/stack.sh",
+                        "logs", target,
+                    ],
+                    shlex.split(remote[2]),
+                )
 
     def test_remote_env_values_are_never_evaluated(self):
         with self.operator_repository() as root:

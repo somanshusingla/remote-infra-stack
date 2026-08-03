@@ -14,7 +14,9 @@ from tests.helpers import repo_path
 
 PROFILE_FORWARDS = {
     "core": ["5432:127.0.0.1:15432", "6379:127.0.0.1:16379"],
-    "vector": ["18000:127.0.0.1:18000"],
+    "vector": ["18000:127.0.0.1:18000", "18001:127.0.0.1:18001"],
+    "dynamodb": ["18002:127.0.0.1:18002", "18003:127.0.0.1:18003"],
+    "inference": ["11440:127.0.0.1:11440", "11441:127.0.0.1:11441"],
     "search": ["9200:127.0.0.1:9200", "5601:127.0.0.1:5601"],
     "observability": [
         "3000:127.0.0.1:3000",
@@ -312,6 +314,8 @@ class TunnelTests(unittest.TestCase):
                 "-L",
                 "18000:127.0.0.1:18000",
                 "-L",
+                "18001:127.0.0.1:18001",
+                "-L",
                 "9200:127.0.0.1:9200",
                 "-L",
                 "5601:127.0.0.1:5601",
@@ -325,6 +329,14 @@ class TunnelTests(unittest.TestCase):
                 "5050:127.0.0.1:5050",
                 "-L",
                 "5540:127.0.0.1:5540",
+                "-L",
+                "18002:127.0.0.1:18002",
+                "-L",
+                "18003:127.0.0.1:18003",
+                "-L",
+                "11440:127.0.0.1:11440",
+                "-L",
+                "11441:127.0.0.1:11441",
                 "tester@test-remote-infra-stack",
             ],
             operation,
@@ -339,6 +351,8 @@ class TunnelTests(unittest.TestCase):
             "observability",
             "search",
             "vector",
+            "dynamodb",
+            "inference",
             "core",
             log=log,
             remote_env=self.remote_env_with(),
@@ -360,6 +374,8 @@ class TunnelTests(unittest.TestCase):
                     "observability",
                     "search",
                     "vector",
+                    "dynamodb",
+                    "inference",
                     "core",
                     log=log,
                     remote_env=self.remote_env_with(),
@@ -373,6 +389,8 @@ class TunnelTests(unittest.TestCase):
         selections = {
             "core": ("core",),
             "vector": ("vector",),
+            "dynamodb": ("dynamodb",),
+            "inference": ("inference",),
             "search": ("search",),
             "observability": ("observability",),
             "tools": ("tools", "core"),
@@ -398,28 +416,38 @@ class TunnelTests(unittest.TestCase):
             "LOCAL_POSTGRES_PORT": "25001",
             "LOCAL_REDIS_PORT": "25002",
             "LOCAL_CHROMA_PORT": "25003",
-            "LOCAL_OPENSEARCH_PORT": "25004",
-            "LOCAL_OPENSEARCH_DASHBOARDS_PORT": "25005",
-            "LOCAL_LANGFUSE_PORT": "25006",
-            "LOCAL_MINIO_API_PORT": "25007",
-            "LOCAL_MINIO_CONSOLE_PORT": "25008",
-            "LOCAL_PGADMIN_PORT": "25009",
-            "LOCAL_REDISINSIGHT_PORT": "25010",
+            "LOCAL_CHROMA_ADMIN_PORT": "25004",
+            "LOCAL_DYNAMODB_PORT": "25005",
+            "LOCAL_DYNAMODB_ADMIN_PORT": "25006",
+            "LOCAL_OLLAMA_LLM_PORT": "25007",
+            "LOCAL_OLLAMA_EMBEDDING_PORT": "25008",
+            "LOCAL_OPENSEARCH_PORT": "25009",
+            "LOCAL_OPENSEARCH_DASHBOARDS_PORT": "25010",
+            "LOCAL_LANGFUSE_PORT": "25011",
+            "LOCAL_MINIO_API_PORT": "25012",
+            "LOCAL_MINIO_CONSOLE_PORT": "25013",
+            "LOCAL_PGADMIN_PORT": "25014",
+            "LOCAL_REDISINSIGHT_PORT": "25015",
         }
         expected = [
             "25001:127.0.0.1:15432",
             "25002:127.0.0.1:16379",
             "25003:127.0.0.1:18000",
-            "25004:127.0.0.1:9200",
-            "25005:127.0.0.1:5601",
-            "25006:127.0.0.1:3000",
-            "25007:127.0.0.1:9090",
-            "25008:127.0.0.1:9091",
-            "25009:127.0.0.1:5050",
-            "25010:127.0.0.1:5540",
+            "25004:127.0.0.1:18001",
+            "25009:127.0.0.1:9200",
+            "25010:127.0.0.1:5601",
+            "25011:127.0.0.1:3000",
+            "25012:127.0.0.1:9090",
+            "25013:127.0.0.1:9091",
+            "25014:127.0.0.1:5050",
+            "25015:127.0.0.1:5540",
+            "25005:127.0.0.1:18002",
+            "25006:127.0.0.1:18003",
+            "25007:127.0.0.1:11440",
+            "25008:127.0.0.1:11441",
         ]
         remote_env = self.remote_env_with(**overrides)
-        profiles = ("observability", "tools", "search", "vector", "core")
+        profiles = ("observability", "tools", "search", "vector", "dynamodb", "inference", "core")
 
         if BASH is not None:
             bash_log = self.base / "bash-overrides.log"
@@ -480,6 +508,43 @@ class TunnelTests(unittest.TestCase):
                 self.assertIn("tools requires core", result.stderr)
                 self.assertEqual([], read_operations(log))
 
+    def test_new_profiles_are_accepted_but_case_mutations_and_duplicates_are_rejected(self):
+        """Catches permissive profile matching or missed duplicate detection."""
+        remote_env = self.remote_env_with()
+        for profile in ("dynamodb", "inference"):
+            if BASH is not None:
+                with self.subTest(client="bash", profile=profile):
+                    log = self.base / f"bash-{profile}.log"
+                    result = self.run_bash(profile, log=log, remote_env=remote_env)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(PROFILE_FORWARDS[profile], extract_forwards(read_operations(log)[0][1:]))
+            for shell in POWERSHELLS:
+                with self.subTest(client=Path(shell).name, profile=profile):
+                    log = self.base / f"{Path(shell).name}-{profile}.log"
+                    result = self.run_powershell(shell, profile, log=log, remote_env=remote_env)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(PROFILE_FORWARDS[profile], extract_forwards(read_operations(log)[0][1:]))
+
+        invalid_selections = (
+            (("dynamodb", "dynamodb"), "duplicate profile"),
+            (("Dynamodb",), "unknown profile: Dynamodb"),
+        )
+        for profiles, message in invalid_selections:
+            if BASH is not None:
+                with self.subTest(client="bash", profiles=profiles):
+                    log = self.base / f"bash-invalid-{'-'.join(profiles)}.log"
+                    result = self.run_bash(*profiles, log=log, remote_env=remote_env)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+            for shell in POWERSHELLS:
+                with self.subTest(client=Path(shell).name, profiles=profiles):
+                    log = self.base / f"{Path(shell).name}-invalid-{'-'.join(profiles)}.log"
+                    result = self.run_powershell(shell, *profiles, log=log, remote_env=remote_env)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], read_operations(log))
+
     def test_local_ports_require_ascii_digits_and_range_before_ssh(self):
         cases = ("+5432", " 5432", "5432 ", "0", "65536", "999999999999999999999")
         for value in cases:
@@ -502,6 +567,23 @@ class TunnelTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn("LOCAL_CHROMA_PORT", result.stderr)
                     self.assertEqual([], read_operations(log))
+
+    def test_unselected_new_local_port_is_still_normalized_before_ssh(self):
+        """Catches skipping validation for a configured but unselected profile."""
+        remote_env = self.remote_env_with(LOCAL_DYNAMODB_PORT="not-a-port")
+        if BASH is not None:
+            bash_log = self.base / "bash-unselected-invalid.log"
+            result = self.run_bash("core", log=bash_log, remote_env=remote_env)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("LOCAL_DYNAMODB_PORT", result.stderr)
+            self.assertEqual([], read_operations(bash_log))
+        for shell in POWERSHELLS:
+            with self.subTest(shell=Path(shell).name):
+                log = self.base / f"{Path(shell).name}-unselected-invalid.log"
+                result = self.run_powershell(shell, "core", log=log, remote_env=remote_env)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("LOCAL_DYNAMODB_PORT", result.stderr)
+                self.assertEqual([], read_operations(log))
 
     def test_local_port_text_is_never_evaluated_as_code(self):
         marker = self.base / "evaluated"
