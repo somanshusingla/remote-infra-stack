@@ -109,6 +109,50 @@ services:
     mem_limit: ${CHROMA_ADMIN_MEMORY:-512m}
     networks: [infra]
 
+  dynamodb-local:
+    profiles: [dynamodb]
+    image: ${DYNAMODB_LOCAL_IMAGE:?set in versions.env}
+    user: root
+    restart: unless-stopped
+    working_dir: /home/dynamodblocal
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "./data"]
+    ports:
+      - "127.0.0.1:18002:8000"
+    volumes:
+      - dynamodb_data:/home/dynamodblocal/data
+    healthcheck:
+      test: ["CMD-SHELL", "exec bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8000'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    mem_limit: ${DYNAMODB_MEMORY:-1g}
+    networks: [infra]
+
+  dynamodb-admin:
+    profiles: [dynamodb]
+    image: ${DYNAMODB_ADMIN_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8001"
+      DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    ports:
+      - "127.0.0.1:18003:8001"
+    depends_on:
+      dynamodb-local:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8001').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    mem_limit: ${DYNAMODB_ADMIN_MEMORY:-512m}
+    networks: [infra]
+
   opensearch:
     profiles: [search]
     image: ${OPENSEARCH_IMAGE:?set in versions.env}
@@ -361,6 +405,8 @@ volumes:
     name: remote-infra-stack-app-redis-data
   chroma_data:
     name: remote-infra-stack-chroma-data
+  dynamodb_data:
+    name: remote-infra-stack-dynamodb-data
   opensearch_data:
     name: remote-infra-stack-opensearch-data
   langfuse_postgres_data:
