@@ -38,7 +38,7 @@ declare -A selected=()
 for profile in "${profiles[@]}"; do
   [[ -n "$profile" ]] || die "profiles must not contain empty entries"
   case "$profile" in
-    core|vector|search|observability|tools) ;;
+    core|vector|search|observability|tools|dynamodb|inference) ;;
     *) die "unknown profile: $profile" ;;
   esac
   [[ -z "${selected[$profile]+x}" ]] || die "duplicate profile: $profile"
@@ -93,9 +93,37 @@ incoming_host=$(realpath -e -- "$incoming_path")
 flock -n "$runtime_fd" || die "another deployment is already in progress"
 
 runtime_env_entry=$runtime_path/.env
+prior_runtime_env_existed=0
+prior_runtime_env_fd=
+prior_runtime_env_held=
 if [[ -e "$runtime_env_entry" || -L "$runtime_env_entry" ]]; then
   [[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
     die "runtime/.env must be absent or a regular non-symlink file"
+  prior_runtime_env_identity=$(stat -Lc '%d:%i' -- "$runtime_env_entry")
+  exec {prior_runtime_env_fd}<"$runtime_env_entry"
+  prior_runtime_env_held=/proc/self/fd/$prior_runtime_env_fd
+  [[ -f "$prior_runtime_env_held" &&
+     "$(stat -Lc '%d:%i' -- "$prior_runtime_env_held")" == "$prior_runtime_env_identity" ]] ||
+    die "could not hold the previous runtime environment"
+  prior_runtime_env_existed=1
+fi
+
+prior_current_present=0
+prior_current_target=
+prior_release_name=
+current_entry=$root_path/current
+if [[ -e "$current_entry" || -L "$current_entry" ]]; then
+  [[ -L "$current_entry" ]] || die "current must be absent or a symbolic link"
+  prior_current_target=$(readlink -- "$current_entry") ||
+    die "could not read the current release link"
+  [[ "$prior_current_target" == releases/* ]] ||
+    die "current must name a direct child of releases"
+  prior_release_name=${prior_current_target#releases/}
+  [[ -n "$prior_release_name" && "$prior_release_name" != */* &&
+     "$prior_release_name" != . && "$prior_release_name" != .. &&
+     "$prior_release_name" != *$'\n'* ]] ||
+    die "current must name a direct child of releases"
+  prior_current_present=1
 fi
 
 hold_incoming_file() {
@@ -142,8 +170,18 @@ staging=$(mktemp -d "$runtime_path/.deploy-XXXXXXXX")
 chmod 0700 -- "$staging"
 current_temp=
 runtime_env_temp=
+success_temp=
+success_marker_installed=0
+rollback_active=0
+rollback_running=0
 incoming_env_cleanup=$incoming_path/$runtime_env_file
 cleanup() {
+  local status=$?
+  trap - ERR EXIT
+  set +e
+  if ((status != 0 && rollback_active == 1 && rollback_running == 0)); then
+    rollback_deployment "$status"
+  fi
   if [[ -n "${staging:-}" && -d "$staging" ]]; then
     rm -rf -- "$staging"
   fi
@@ -153,9 +191,13 @@ cleanup() {
   if [[ -n "${runtime_env_temp:-}" ]]; then
     rm -f -- "$runtime_env_temp"
   fi
+  if [[ -n "${success_temp:-}" ]]; then
+    rm -f -- "$success_temp"
+  fi
   if [[ -n "${incoming_env_cleanup:-}" ]]; then
     rm -f -- "$incoming_env_cleanup"
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -222,7 +264,11 @@ tar --extract --gzip --file "$staged_archive" --directory "$extracted" \
   --no-same-owner --no-same-permissions --delay-directory-restore ||
   die "archive extraction failed"
 for required in \
-  compose.yaml versions.env scripts/remote/compose.sh scripts/remote/health.sh \
+  compose.yaml versions.env scripts/remote/compose.sh scripts/remote/preflight.sh \
+  scripts/remote/health.sh config/ollama/bootstrap.sh \
+  images/chromadb-admin/Dockerfile .dockerignore \
+  vendor/chromadb-admin/package.json vendor/chromadb-admin/package-lock.json \
+  vendor/chromadb-admin/LICENSE.txt vendor/chromadb-admin/UPSTREAM.md \
   config/opensearch/opensearch.yml config/opensearch/docker-entrypoint.sh; do
   [[ -f "$extracted/$required" && ! -L "$extracted/$required" ]] ||
     die "release is missing regular file: $required"
@@ -243,7 +289,9 @@ open_release_leaf() {
 }
 
 open_release_leaf scripts/remote/compose.sh compose_script_fd
+open_release_leaf scripts/remote/preflight.sh preflight_script_fd
 open_release_leaf scripts/remote/health.sh health_script_fd
+open_release_leaf config/ollama/bootstrap.sh ollama_bootstrap_fd
 open_release_leaf compose.yaml compose_file_fd
 open_release_leaf versions.env versions_env_fd
 open_release_leaf config/opensearch/opensearch.yml opensearch_config_fd
@@ -306,9 +354,6 @@ else
   "$move_bin" -T -- "$extracted" "$release_dir"
 fi
 
-if [[ -e "$root_path/current" && ! -L "$root_path/current" ]]; then
-  die "current must be absent or a symbolic link"
-fi
 if [[ -e "$release_dir/.successful" || -L "$release_dir/.successful" ]]; then
   [[ -f "$release_dir/.successful" && ! -L "$release_dir/.successful" ]] ||
     die "successful marker must be a regular file"
@@ -321,14 +366,218 @@ release_host=$(realpath -e -- "$release_held")
 [[ "$release_host" == "$releases_host/$release_name" ]] ||
   die "release host path does not match the held releases directory"
 release_identity=$(stat -Lc '%d:%i' -- "$release_held")
-verify_release_identity() {
+release_identity_is_current() {
   local host_identity
-  [[ -d "$release_host" && ! -L "$release_host" ]] ||
-    die "canonical release path no longer names a real directory"
-  host_identity=$(stat -Lc '%d:%i' -- "$release_host")
-  [[ "$host_identity" == "$release_identity" ]] ||
+  [[ -d "$release_host" && ! -L "$release_host" ]] || return 1
+  host_identity=$(stat -Lc '%d:%i' -- "$release_host") || return 1
+  [[ "$host_identity" == "$release_identity" ]]
+}
+verify_release_identity() {
+  release_identity_is_current ||
     die "canonical release path no longer names the held verified release"
 }
+
+current_names_held_release() {
+  local target target_real target_identity
+  [[ -L "$current_entry" ]] || return 1
+  target=$(readlink -- "$current_entry") || return 1
+  [[ "$target" == "releases/$release_name" ]] || return 1
+  release_identity_is_current || return 1
+  target_real=$(realpath -e -- "$current_entry") || return 1
+  [[ "$target_real" == "$release_host" ]] || return 1
+  target_identity=$(stat -Lc '%d:%i' -- "$current_entry") || return 1
+  [[ "$target_identity" == "$release_identity" ]]
+}
+
+export STACK_ROOT=$root
+export STACK_RELEASE_DIR=$release_host
+export STACK_RELEASE_HELD_DIR=$release_held
+export STACK_RUNTIME_ENV_FILE=$staged_runtime_env
+export STACK_VERSIONS_ENV_FILE=/proc/self/fd/$versions_env_fd
+export STACK_COMPOSE_FILE=/proc/self/fd/$compose_file_fd
+export STACK_OPENSEARCH_CONFIG_FILE=/proc/self/fd/$opensearch_config_fd
+export STACK_OPENSEARCH_ENTRYPOINT_FILE=/proc/self/fd/$opensearch_entrypoint_fd
+compose_script=/proc/self/fd/$compose_script_fd
+preflight_script=/proc/self/fd/$preflight_script_fd
+health_script=/proc/self/fd/$health_script_fd
+export STACK_COMPOSE_SCRIPT=$compose_script
+
+profile_services() {
+  case "$1" in
+    core) printf '%s\n' app-postgres app-redis ;;
+    vector) printf '%s\n' chroma chroma-admin ;;
+    search) printf '%s\n' opensearch opensearch-dashboards ;;
+    observability)
+      printf '%s\n' langfuse-postgres langfuse-redis clickhouse minio langfuse-worker langfuse-web
+      ;;
+    tools) printf '%s\n' pgadmin redisinsight ;;
+    dynamodb) printf '%s\n' dynamodb-local dynamodb-admin ;;
+    inference) printf '%s\n' ollama-llm ollama-embedding ;;
+    *) return 1 ;;
+  esac
+}
+
+attempted_services=()
+for profile in "${profiles[@]}"; do
+  mapfile -t expanded_services < <(profile_services "$profile")
+  attempted_services+=("${expanded_services[@]}")
+done
+
+# A previous release is executable during rollback only when current names one
+# trusted direct release child and all Compose transport inputs can be held.
+prior_release_available=0
+prior_release_fd=
+prior_release_held=
+prior_release_host=
+hold_prior_leaf() {
+  local relative=$1 output_variable=$2
+  local source=$prior_release_held/$relative
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  local source_real source_identity leaf_fd held
+  source_real=$(realpath -e -- "$source") || return 1
+  [[ "$source_real" == "$prior_release_host/$relative" ]] || return 1
+  source_identity=$(stat -Lc '%d:%i' -- "$source") || return 1
+  exec {leaf_fd}<"$source" || return 1
+  held=/proc/self/fd/$leaf_fd
+  [[ -f "$held" && "$(stat -Lc '%d:%i' -- "$held")" == "$source_identity" ]] ||
+    return 1
+  printf -v "$output_variable" '%s' "$leaf_fd"
+}
+
+if ((prior_current_present == 1)); then
+  prior_candidate=$releases_path/$prior_release_name
+  if [[ -d "$prior_candidate" && ! -L "$prior_candidate" &&
+        -f "$prior_candidate/.successful" && ! -L "$prior_candidate/.successful" &&
+        -f "$prior_candidate/.release-digest" && ! -L "$prior_candidate/.release-digest" ]]; then
+    prior_stored_digest=$(<"$prior_candidate/.release-digest")
+    if [[ "$prior_stored_digest" =~ ^[[:xdigit:]]{64}$ ]]; then
+      prior_release_host=$(realpath -e -- "$prior_candidate")
+      if [[ "$prior_release_host" == "$releases_host/$prior_release_name" ]]; then
+        exec {prior_release_fd}<"$prior_candidate"
+        prior_release_held=/proc/self/fd/$prior_release_fd
+        if [[ -d "$prior_release_held" &&
+              "$(realpath -e -- "$prior_release_held")" == "$prior_release_host" ]] &&
+          hold_prior_leaf scripts/remote/compose.sh prior_compose_script_fd &&
+          hold_prior_leaf compose.yaml prior_compose_file_fd &&
+          hold_prior_leaf versions.env prior_versions_env_fd &&
+          hold_prior_leaf config/opensearch/opensearch.yml prior_opensearch_config_fd &&
+          hold_prior_leaf config/opensearch/docker-entrypoint.sh prior_opensearch_entrypoint_fd; then
+          prior_release_available=1
+        fi
+      fi
+    fi
+  fi
+fi
+
+prior_compose() {
+  STACK_ROOT="$root" \
+  STACK_RELEASE_DIR="$prior_release_host" \
+  STACK_RELEASE_HELD_DIR="$prior_release_held" \
+  STACK_RUNTIME_ENV_FILE="$prior_runtime_env_held" \
+  STACK_VERSIONS_ENV_FILE="/proc/self/fd/$prior_versions_env_fd" \
+  STACK_COMPOSE_FILE="/proc/self/fd/$prior_compose_file_fd" \
+  STACK_OPENSEARCH_CONFIG_FILE="/proc/self/fd/$prior_opensearch_config_fd" \
+  STACK_OPENSEARCH_ENTRYPOINT_FILE="/proc/self/fd/$prior_opensearch_entrypoint_fd" \
+  STACK_COMPOSE_SCRIPT="/proc/self/fd/$prior_compose_script_fd" \
+    bash "/proc/self/fd/$prior_compose_script_fd" "$@"
+}
+
+restore_previous_current() {
+  if [[ -n "${current_temp:-}" ]]; then
+    rm -f -- "$current_temp"
+    current_temp=
+  fi
+  if ((prior_current_present == 1)); then
+    current_temp=$root_path/.current.rollback.$$
+    rm -f -- "$current_temp"
+    if ln -s -- "$prior_current_target" "$current_temp" &&
+       mv -Tf -- "$current_temp" "$current_entry"; then
+      current_temp=
+    fi
+  elif [[ -L "$current_entry" ]]; then
+    rm -f -- "$current_entry"
+  fi
+}
+
+restore_previous_runtime_env() {
+  if ((prior_runtime_env_existed == 1)); then
+    runtime_env_temp=$(mktemp "$runtime_path/.env.rollback.XXXXXXXX") || return 1
+    if "${CP_BIN:-cp}" -- "$prior_runtime_env_held" "$runtime_env_temp" &&
+       chmod 0600 -- "$runtime_env_temp" &&
+       mv -T -- "$runtime_env_temp" "$runtime_env_entry"; then
+      runtime_env_temp=
+      return 0
+    fi
+    return 1
+  fi
+  if [[ -e "$runtime_env_entry" || -L "$runtime_env_entry" ]]; then
+    [[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] || return 1
+    rm -f -- "$runtime_env_entry"
+  fi
+}
+
+restart_previous_services() {
+  ((prior_release_available == 1 && prior_runtime_env_existed == 1)) || return 0
+  local profile
+  local -a supported_profiles=() probe_profiles=()
+  declare -A prior_supported=()
+  for profile in "${profiles[@]}"; do
+    probe_profiles=("$profile")
+    if [[ "$profile" == tools ]]; then
+      [[ -n "${selected[core]+x}" ]] || continue
+      probe_profiles=(core tools)
+    fi
+    if prior_compose "${probe_profiles[@]}" -- config --quiet >/dev/null 2>&1; then
+      prior_supported[$profile]=1
+    fi
+  done
+  for profile in "${profiles[@]}"; do
+    [[ -n "${prior_supported[$profile]+x}" ]] || continue
+    if [[ "$profile" == tools && -z "${prior_supported[core]+x}" ]]; then
+      continue
+    fi
+    supported_profiles+=("$profile")
+  done
+  ((${#supported_profiles[@]} > 0)) || return 0
+  prior_compose "${supported_profiles[@]}" -- up -d --wait >/dev/null 2>&1
+}
+
+rollback_deployment() {
+  local original_status=$1
+  rollback_running=1
+  rollback_active=0
+  trap - ERR
+  set +e
+  bash "$compose_script" "${profiles[@]}" -- rm -sf "${attempted_services[@]}" ||
+    printf 'WARNING: failed-release container cleanup did not complete\n' >&2
+  if ((success_marker_installed == 1)); then
+    if [[ -f "$release_held/.successful" && ! -L "$release_held/.successful" ]]; then
+      rm -f -- "$release_held/.successful" ||
+        printf 'WARNING: failed-release success marker could not be removed\n' >&2
+    fi
+    success_marker_installed=0
+  fi
+  restore_previous_runtime_env ||
+    printf 'WARNING: previous runtime environment could not be restored\n' >&2
+  restore_previous_current ||
+    printf 'WARNING: previous current release link could not be restored\n' >&2
+  restart_previous_services ||
+    printf 'WARNING: previous selected services could not be restarted\n' >&2
+  rollback_running=0
+  return 0
+}
+
+on_transaction_error() {
+  local original_status=$?
+  trap - ERR
+  set +e
+  rollback_deployment "$original_status"
+  exit "$original_status"
+}
+
+# From this point, every non-successful exit rolls back the runtime transaction.
+rollback_active=1
+trap on_transaction_error ERR
 
 # Install the exact lock-held snapshot as the durable runtime environment. The
 # Compose transaction continues to read the private snapshot so later pathname
@@ -341,37 +590,42 @@ runtime_env_temp=
 [[ -f "$runtime_env_entry" && ! -L "$runtime_env_entry" ]] ||
   die "could not atomically install runtime/.env"
 
-export STACK_ROOT=$root
-export STACK_RELEASE_DIR=$release_host
-export STACK_RELEASE_HELD_DIR=$release_held
-export STACK_RUNTIME_ENV_FILE=$staged_runtime_env
-export STACK_VERSIONS_ENV_FILE=/proc/self/fd/$versions_env_fd
-export STACK_COMPOSE_FILE=/proc/self/fd/$compose_file_fd
-export STACK_OPENSEARCH_CONFIG_FILE=/proc/self/fd/$opensearch_config_fd
-export STACK_OPENSEARCH_ENTRYPOINT_FILE=/proc/self/fd/$opensearch_entrypoint_fd
-compose_script=/proc/self/fd/$compose_script_fd
-health_script=/proc/self/fd/$health_script_fd
-export STACK_COMPOSE_SCRIPT=$compose_script
 verify_release_identity
 bash "$compose_script" "${profiles[@]}" -- config --quiet
 verify_release_identity
-bash "$compose_script" "${profiles[@]}" -- pull
+bash "$preflight_script" "${profiles[@]}"
 verify_release_identity
+bash "$compose_script" "${profiles[@]}" -- pull --ignore-buildable
+verify_release_identity
+if [[ -n "${selected[vector]+x}" ]]; then
+  # Docker reads the repository-owned build context by canonical pathname. The
+  # held descriptors above authenticate the control scripts and Compose inputs;
+  # same-user mutation of build-context or bind-mount pathname bytes is outside
+  # that descriptor guarantee.
+  bash "$compose_script" "${profiles[@]}" -- build --pull chroma-admin
+  verify_release_identity
+fi
 bash "$compose_script" "${profiles[@]}" -- up -d --wait
 verify_release_identity
 bash "$health_script" "${profiles[@]}"
 verify_release_identity
 
-if [[ ! -e "$release_dir/.successful" ]]; then
-  success_temp=$release_dir/.successful.$$
-  (umask 077; : >"$success_temp")
-  mv -T -- "$success_temp" "$release_dir/.successful"
-fi
 current_temp=$root_path/.current.$release_name.$$
 ln -sfn -- "releases/$release_name" "$current_temp"
 verify_release_identity
-mv -Tf -- "$current_temp" "$root_path/current"
+"$move_bin" -Tf -- "$current_temp" "$root_path/current"
 current_temp=
+current_names_held_release || die "current activation did not name the held verified release"
+trap - ERR
+[[ ! -e "$release_held/.successful" && ! -L "$release_held/.successful" ]] ||
+  die "successful marker appeared before transaction commit"
+success_temp=$release_held/.successful.$$
+(umask 077; : >"$success_temp")
+mv -T -- "$success_temp" "$release_held/.successful"
+success_marker_installed=1
+success_temp=
+current_names_held_release || die "current activation changed before commit"
+rollback_active=0
 
 # A successful release is trusted only when both deployer-owned markers are
 # regular files. Keep current even when its name sorts older, then keep the two
