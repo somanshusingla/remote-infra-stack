@@ -27,7 +27,7 @@ while (($#)); do
   fi
   profile=$1
   case "$profile" in
-    core|vector|search|observability|tools) ;;
+    core|vector|search|observability|tools|dynamodb|inference) ;;
     *) die "unknown profile: $profile" ;;
   esac
   [[ -z "${selected[$profile]+x}" ]] || die "duplicate profile: $profile"

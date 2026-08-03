@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 
 
@@ -29,5 +30,25 @@ if "--arg" in arguments:
         for item in matching
     )
     raise SystemExit(0 if healthy else 1)
+
+if "--args" in arguments:
+    index = arguments.index("--args")
+    if log_path := os.environ.get("STACK_FAKE_JQ_LOG"):
+        with open(log_path, "w", encoding="utf-8") as output:
+            json.dump(arguments, output)
+    expected_filter = (
+        "[.services[$ARGS.positional[]].mem_limit // 0 | tonumber] | add // 0"
+    )
+    if index + 1 >= len(arguments) or arguments[index + 1] != expected_filter:
+        raise SystemExit(2)
+    services = arguments[index + 2 :]
+    model = json.loads(payload)
+    print(
+        sum(
+            int(model["services"][service].get("mem_limit", 0))
+            for service in services
+        )
+    )
+    raise SystemExit(0)
 
 raise SystemExit(2)

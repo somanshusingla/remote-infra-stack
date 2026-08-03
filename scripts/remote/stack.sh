@@ -13,15 +13,18 @@ usage() {
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
-compose_script=$script_dir/compose.sh
+compose_script=${STACK_COMPOSE_SCRIPT:-$script_dir/compose.sh}
+preflight_script=$script_dir/preflight.sh
 
 profile_services() {
   case "$1" in
     core) printf '%s\n' app-postgres app-redis ;;
-    vector) printf '%s\n' chroma ;;
+    vector) printf '%s\n' chroma chroma-admin ;;
     search) printf '%s\n' opensearch opensearch-dashboards ;;
     observability) printf '%s\n' langfuse-postgres langfuse-redis clickhouse minio langfuse-worker langfuse-web ;;
     tools) printf '%s\n' pgadmin redisinsight ;;
+    dynamodb) printf '%s\n' dynamodb-local dynamodb-admin ;;
+    inference) printf '%s\n' ollama-llm ollama-embedding ;;
     *) return 1 ;;
   esac
 }
@@ -51,39 +54,6 @@ compose() {
   bash "$compose_script" "$@"
 }
 
-preflight_up() {
-  local profiles=("$@")
-  local df_bin=${DF_BIN:-df}
-  local jq_bin=${JQ_BIN:-jq}
-  local meminfo_file=${MEMINFO_FILE:-/proc/meminfo}
-  local free_bytes
-  command -v "$jq_bin" >/dev/null 2>&1 || die "required command is unavailable: jq"
-  free_bytes=$("$df_bin" --output=avail -B1 "$stack_root" 2>/dev/null | awk 'NR > 1 { value=$1 } END { print value }') ||
-    die "could not determine free disk space for $stack_root"
-  [[ "$free_bytes" =~ ^[0-9]+$ ]] || die "could not determine free disk space for $stack_root"
-  if (( free_bytes < 10 * 1024 * 1024 * 1024 )); then
-    die "less than 10 GiB of disk space is available under $stack_root"
-  elif (( free_bytes < 20 * 1024 * 1024 * 1024 )); then
-    printf 'WARNING: less than 20 GiB of disk space is available under %s\n' "$stack_root" >&2
-  fi
-
-  local model selected_services required_bytes available_kib
-  model=$(compose "${profiles[@]}" -- config --format json) || die "Compose configuration rendering failed"
-  mapfile -t selected_services < <(expand_profiles "${profiles[@]}")
-  required_bytes=$("$jq_bin" --args \
-    '[.services[$ARGS.positional[]].mem_limit // 0 | tonumber] | add // 0' \
-    "${selected_services[@]}" <<<"$model") || die "could not total Compose memory limits"
-  required_bytes=$((required_bytes + 2 * 1024 * 1024 * 1024))
-  if [[ -r "$meminfo_file" ]]; then
-    available_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo_file")
-    if [[ "$available_kib" =~ ^[0-9]+$ ]] && (( required_bytes > available_kib * 1024 )); then
-      printf 'WARNING: selected service memory limits plus 2 GiB host overhead exceed host memory\n' >&2
-    fi
-  else
-    printf 'WARNING: memory availability could not be read from %s\n' "$meminfo_file" >&2
-  fi
-}
-
 action=${1:-}
 [[ -n "$action" ]] || usage
 shift
@@ -91,8 +61,8 @@ shift
 case "$action" in
   up)
     validate_profiles "$@"
-    preflight_up "$@"
-    compose "$@" -- up -d --wait
+    STACK_COMPOSE_SCRIPT="$compose_script" bash "$preflight_script" "$@"
+    compose "$@" -- up -d --wait --build
     ;;
   stop)
     validate_profiles "$@"
@@ -118,7 +88,7 @@ case "$action" in
       compose -- logs -f "${services[@]}"
     else
       case "$target" in
-        app-postgres|app-redis|chroma|opensearch|opensearch-dashboards|langfuse-postgres|langfuse-redis|clickhouse|minio|langfuse-worker|langfuse-web|pgadmin|redisinsight)
+        app-postgres|app-redis|chroma|chroma-admin|dynamodb-local|dynamodb-admin|ollama-llm|ollama-embedding|opensearch|opensearch-dashboards|langfuse-postgres|langfuse-redis|clickhouse|minio|langfuse-worker|langfuse-web|pgadmin|redisinsight)
           compose -- logs -f "$target"
           ;;
         *) die "unknown log target: $target" ;;

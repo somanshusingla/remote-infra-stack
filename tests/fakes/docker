@@ -10,6 +10,15 @@ if [[ -n "${STACK_DOCKER_LOG:-}" ]]; then
 fi
 
 joined=" $* "
+if (($# == 3)) && [[ "$1" == info && "$2" == --format && "$3" == '{{.DockerRootDir}}' ]]; then
+  [[ -z "${STACK_FAKE_DOCKER_INFO_ERROR:-}" ]] || exit 45
+  if [[ -n "${STACK_FAKE_DOCKER_ROOT_DIR+x}" ]]; then
+    printf '%s\n' "$STACK_FAKE_DOCKER_ROOT_DIR"
+  else
+    printf '%s\n' /var/lib/docker
+  fi
+  exit 0
+fi
 if [[ -n "${STACK_FAKE_REQUIRE_OPENSEARCH_B64:-}" && "$joined" == *" config "* ]]; then
   [[ -n "${STACK_OPENSEARCH_CONFIG_B64:-}" && -n "${STACK_OPENSEARCH_ENTRYPOINT_B64:-}" ]] || exit 61
 fi
@@ -17,6 +26,16 @@ project_directory=
 compose_file=
 versions_file=
 arguments=("$@")
+last_argument=${arguments[$((${#arguments[@]} - 1))]:-}
+if [[ -n "${STACK_FAKE_FAIL_HTTP_URL:-}" && "$1" != compose && "$last_argument" == "$STACK_FAKE_FAIL_HTTP_URL" ]]; then
+  exit 46
+fi
+if [[ -n "${STACK_FAKE_FAIL_DYNAMODB:-}" && "$joined" == *" exec -T dynamodb-admin node -e "* ]]; then
+  exit 47
+fi
+if [[ -n "${STACK_FAKE_FAIL_OLLAMA_SERVICE:-}" && "$joined" == *" exec -T $STACK_FAKE_FAIL_OLLAMA_SERVICE /bin/sh -c "* ]]; then
+  exit 48
+fi
 for ((index = 0; index < ${#arguments[@]}; index++)); do
   if [[ "${arguments[$index]}" == --project-directory && $((index + 1)) -lt ${#arguments[@]} ]]; then
     project_directory=${arguments[$((index + 1))]}
@@ -88,7 +107,7 @@ if [[ "$joined" == *" config "* && "$joined" == *" --format json "* ]]; then
     printf '%s\n' "$STACK_FAKE_CONFIG_JSON"
   else
     cat <<'JSON'
-{"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912},"chroma":{"mem_limit":4294967296},"opensearch":{"mem_limit":6442450944},"opensearch-dashboards":{"mem_limit":1073741824},"langfuse-postgres":{"mem_limit":2147483648},"langfuse-redis":{"mem_limit":536870912},"clickhouse":{"mem_limit":6442450944},"minio":{"mem_limit":1073741824},"langfuse-worker":{"mem_limit":2147483648},"langfuse-web":{"mem_limit":2147483648},"pgadmin":{"mem_limit":536870912},"redisinsight":{"mem_limit":536870912}}}
+{"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912},"chroma":{"mem_limit":4294967296},"chroma-admin":{"mem_limit":536870912},"dynamodb-local":{"mem_limit":1073741824},"dynamodb-admin":{"mem_limit":536870912},"ollama-llm":{"mem_limit":15032385536},"ollama-embedding":{"mem_limit":2147483648},"opensearch":{"mem_limit":6442450944},"opensearch-dashboards":{"mem_limit":1073741824},"langfuse-postgres":{"mem_limit":2147483648},"langfuse-redis":{"mem_limit":536870912},"clickhouse":{"mem_limit":6442450944},"minio":{"mem_limit":1073741824},"langfuse-worker":{"mem_limit":2147483648},"langfuse-web":{"mem_limit":2147483648},"pgadmin":{"mem_limit":536870912},"redisinsight":{"mem_limit":536870912}}}
 JSON
   fi
   exit 0
@@ -105,7 +124,7 @@ if [[ "$joined" == *" ps "* && "$joined" == *" --format json "* ]]; then
     printf '%s\n' "$STACK_FAKE_PS_JSON"
   else
     cat <<'JSON'
-[{"Service":"app-postgres","State":"running","Health":"healthy"},{"Service":"app-redis","State":"running","Health":"healthy"},{"Service":"chroma","State":"running","Health":"healthy"},{"Service":"opensearch","State":"running","Health":"healthy"},{"Service":"opensearch-dashboards","State":"running","Health":"healthy"},{"Service":"langfuse-postgres","State":"running","Health":"healthy"},{"Service":"langfuse-redis","State":"running","Health":"healthy"},{"Service":"clickhouse","State":"running","Health":"healthy"},{"Service":"minio","State":"running","Health":"healthy"},{"Service":"langfuse-worker","State":"running","Health":"healthy"},{"Service":"langfuse-web","State":"running","Health":"healthy"},{"Service":"pgadmin","State":"running","Health":"healthy"},{"Service":"redisinsight","State":"running","Health":"healthy"}]
+[{"Service":"app-postgres","State":"running","Health":"healthy"},{"Service":"app-redis","State":"running","Health":"healthy"},{"Service":"chroma","State":"running","Health":"healthy"},{"Service":"chroma-admin","State":"running","Health":"healthy"},{"Service":"dynamodb-local","State":"running","Health":"healthy"},{"Service":"dynamodb-admin","State":"running","Health":"healthy"},{"Service":"ollama-llm","State":"running","Health":"healthy"},{"Service":"ollama-embedding","State":"running","Health":"healthy"},{"Service":"opensearch","State":"running","Health":"healthy"},{"Service":"opensearch-dashboards","State":"running","Health":"healthy"},{"Service":"langfuse-postgres","State":"running","Health":"healthy"},{"Service":"langfuse-redis","State":"running","Health":"healthy"},{"Service":"clickhouse","State":"running","Health":"healthy"},{"Service":"minio","State":"running","Health":"healthy"},{"Service":"langfuse-worker","State":"running","Health":"healthy"},{"Service":"langfuse-web","State":"running","Health":"healthy"},{"Service":"pgadmin","State":"running","Health":"healthy"},{"Service":"redisinsight","State":"running","Health":"healthy"}]
 JSON
   fi
 fi

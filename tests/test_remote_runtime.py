@@ -40,12 +40,43 @@ class RemoteRuntimeTests(unittest.TestCase):
         (self.root / "runtime").mkdir()
         write_test_env(self.root / "runtime/.env")
         self.log = self.root / "docker.log"
+        self.df_log = self.root / "df.log"
+        self.fake_df = self.root / "df"
+        self.fake_df.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'df'
+  printf ' %q' "$@"
+  printf '\\n'
+} >>"$STACK_DF_LOG"
+target=${!#}
+if [[ -n "${STACK_FAKE_DF_FAIL_TARGET:-}" && "$target" == "$STACK_FAKE_DF_FAIL_TARGET" ]]; then
+  exit 71
+fi
+if [[ "$target" == "${STACK_FAKE_DOCKER_ROOT_DIR:-/var/lib/docker}" ]]; then
+  available=${STACK_FAKE_DOCKER_BYTES:-32212254720}
+else
+  available=${STACK_FAKE_RELEASE_BYTES:-32212254720}
+fi
+printf 'Avail\\n%s\\n' "$available"
+""",
+            encoding="utf-8",
+        )
+        self.fake_df.chmod(0o755)
+        self.large_meminfo = self.root / "large-meminfo"
+        self.large_meminfo.write_text("MemTotal: 67108864 kB\n", encoding="ascii")
+        self.fake_free = self.root / "free"
+        self.fake_free.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        self.fake_free.chmod(0o755)
         self.env = {
             **os.environ,
             "STACK_ROOT": shell_path(self.root),
             "STACK_RELEASE_DIR": shell_path(repo_path(".")),
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
             "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
+            "JQ_BIN": shell_path(repo_path("tests/fakes/jq")),
+            "FREE_BIN": shell_path(self.fake_free),
             "STACK_DOCKER_LOG": shell_path(self.log),
         }
 
@@ -60,6 +91,16 @@ class RemoteRuntimeTests(unittest.TestCase):
 
     def docker_calls(self):
         return [shlex.split(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def capacity_env(self):
+        return {
+            "DF_BIN": shell_path(self.fake_df),
+            "STACK_DF_LOG": shell_path(self.df_log),
+            "MEMINFO_FILE": shell_path(self.large_meminfo),
+        }
+
+    def df_calls(self):
+        return [shlex.split(line) for line in self.df_log.read_text(encoding="utf-8").splitlines()]
 
     def test_compose_builds_canonical_command_with_ordered_profiles(self):
         result = self.run_script("compose.sh", "core", "vector", "--", "config", "--quiet")
@@ -132,6 +173,27 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertFalse(self.log.exists())
 
+    def test_new_profiles_expand_to_exact_services_for_stop_and_logs(self):
+        result = self.run_script("stack.sh", "stop", "vector", "dynamodb", "inference")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "stop", "chroma", "chroma-admin", "dynamodb-local", "dynamodb-admin",
+                "ollama-llm", "ollama-embedding",
+            ],
+            self.docker_calls()[0][-7:],
+        )
+
+        for service in (
+            "chroma-admin", "dynamodb-local", "dynamodb-admin", "ollama-llm",
+            "ollama-embedding",
+        ):
+            with self.subTest(service=service):
+                self.log.unlink()
+                result = self.run_script("stack.sh", "logs", service)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(["logs", "-f", service], self.docker_calls()[0][-3:])
+
     def test_health_accepts_compose_json_lines_and_checks_exact_core_boundaries(self):
         ps = "\n".join(json.dumps(item) for item in (
             {"Service": "app-postgres", "State": "running", "Health": "healthy"},
@@ -166,6 +228,7 @@ class RemoteRuntimeTests(unittest.TestCase):
         healthy_replicas = json.dumps([
             {"Service": "chroma", "State": "running", "Health": "healthy"},
             {"Service": "chroma", "State": "running", "Health": "healthy"},
+            {"Service": "chroma-admin", "State": "running", "Health": "healthy"},
         ])
         result = self.run_script("health.sh", "vector", STACK_FAKE_PS_JSON=healthy_replicas)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -174,10 +237,12 @@ class RemoteRuntimeTests(unittest.TestCase):
             "one-starting-replica": [
                 {"Service": "chroma", "State": "running", "Health": "healthy"},
                 {"Service": "chroma", "State": "running", "Health": "starting"},
+                {"Service": "chroma-admin", "State": "running", "Health": "healthy"},
             ],
             "one-unhealthy-replica": [
                 {"Service": "chroma", "State": "running", "Health": "healthy"},
                 {"Service": "chroma", "State": "running", "Health": "unhealthy"},
+                {"Service": "chroma-admin", "State": "running", "Health": "healthy"},
             ],
             "missing-selected-service": [
                 {"Service": "other", "State": "running", "Health": "healthy"},
@@ -196,10 +261,12 @@ class RemoteRuntimeTests(unittest.TestCase):
     def test_health_includes_exited_replicas_hidden_by_default_ps(self):
         visible = json.dumps([
             {"Service": "chroma", "State": "running", "Health": "healthy"},
+            {"Service": "chroma-admin", "State": "running", "Health": "healthy"},
         ])
         all_containers = json.dumps([
             {"Service": "chroma", "State": "running", "Health": "healthy"},
             {"Service": "chroma", "State": "exited", "Health": ""},
+            {"Service": "chroma-admin", "State": "running", "Health": "healthy"},
         ])
         result = self.run_script(
             "health.sh", "vector", STACK_FAKE_PS_JSON=visible,
@@ -208,6 +275,35 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("chroma", result.stderr)
         self.assertEqual(1, len(self.docker_calls()))
+
+    def test_health_rejects_each_missing_or_unhealthy_data_inference_service_before_probes(self):
+        required_services = (
+            "chroma", "chroma-admin", "dynamodb-local", "dynamodb-admin",
+            "ollama-llm", "ollama-embedding",
+        )
+        healthy = {
+            service: {"Service": service, "State": "running", "Health": "healthy"}
+            for service in required_services
+        }
+        for service in required_services:
+            for state in ("missing", "unhealthy"):
+                with self.subTest(service=service, state=state):
+                    self.log.unlink(missing_ok=True)
+                    records = [record.copy() for name, record in healthy.items() if name != service]
+                    if state == "unhealthy":
+                        records.append(
+                            {"Service": service, "State": "running", "Health": "unhealthy"}
+                        )
+                    result = self.run_script(
+                        "health.sh", "vector", "dynamodb", "inference",
+                        STACK_FAKE_PS_ALL_JSON=json.dumps(records),
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(service, result.stderr)
+                    self.assertEqual(
+                        1, len(self.docker_calls()),
+                        "functional HTTP, SDK, and Ollama probes must not run",
+                    )
 
     def test_health_maps_every_profile_to_its_exact_services_and_endpoints(self):
         result = self.run_script(
@@ -248,6 +344,88 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertEqual(2, sum("--config" in call for call in calls))
         combined = result.stdout + result.stderr + self.log.read_text(encoding="utf-8")
         self.assertNotIn(secret, combined)
+
+    def test_health_checks_new_uis_dynamodb_and_exact_ollama_models(self):
+        result = self.run_script("health.sh", "vector", "dynamodb", "inference")
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        http_calls = [call for call in calls if "--max-time" in call]
+        self.assertEqual(
+            [
+                "http://127.0.0.1:18000/api/v2/heartbeat",
+                "http://127.0.0.1:18001",
+                "http://127.0.0.1:18003",
+                "http://127.0.0.1:11440/api/version",
+                "http://127.0.0.1:11441/api/version",
+            ],
+            [call[-1] for call in http_calls],
+        )
+        self.assertNotIn("http://127.0.0.1:18002", [call[-1] for call in http_calls])
+
+        exec_calls = [call[call.index("-T") + 1:] for call in calls if "exec" in call]
+        dynamodb_script = (
+            "const { DynamoDBClient, ListTablesCommand } = require('@aws-sdk/client-dynamodb'); "
+            "const client = new DynamoDBClient({ endpoint: process.env.DYNAMO_ENDPOINT, "
+            "region: process.env.AWS_REGION, credentials: { accessKeyId: "
+            "process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY } }); "
+            "client.send(new ListTablesCommand({ Limit: 1 })).then(() => client.destroy())"
+            ".catch(error => { console.error(error); client.destroy(); process.exit(1); });"
+        )
+        self.assertEqual(
+            [
+                ["dynamodb-admin", "node", "-e", dynamodb_script],
+                ["ollama-llm", "/bin/sh", "-c", 'exec /bin/ollama show "$OLLAMA_MODEL"'],
+                ["ollama-embedding", "/bin/sh", "-c", 'exec /bin/ollama show "$OLLAMA_MODEL"'],
+            ],
+            exec_calls,
+        )
+
+    def test_health_never_runs_generate_or_embed(self):
+        result = self.run_script("health.sh", "inference")
+        self.assertEqual(0, result.returncode, result.stderr)
+        captured = "\n".join(" ".join(call) for call in self.docker_calls()).lower()
+        for forbidden in (
+            "/api/generate", "/api/chat", "/api/embed", "/api/embeddings",
+            "ollama run", "ollama embed",
+        ):
+            self.assertNotIn(forbidden, captured)
+
+    def test_health_propagates_each_new_endpoint_and_protocol_failure(self):
+        profile_by_url = {
+            "http://127.0.0.1:18000/api/v2/heartbeat": "vector",
+            "http://127.0.0.1:18001": "vector",
+            "http://127.0.0.1:18003": "dynamodb",
+            "http://127.0.0.1:11440/api/version": "inference",
+            "http://127.0.0.1:11441/api/version": "inference",
+        }
+        for endpoint, profile in profile_by_url.items():
+            with self.subTest(endpoint=endpoint):
+                if self.log.exists():
+                    self.log.unlink()
+                result = self.run_script(
+                    "health.sh", profile, STACK_FAKE_FAIL_HTTP_URL=endpoint
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertTrue(self.log.exists())
+                self.assertIn(endpoint, [call[-1] for call in self.docker_calls()])
+
+        for failure_env, profile, service in (
+            ({"STACK_FAKE_FAIL_DYNAMODB": "1"}, "dynamodb", "dynamodb-admin"),
+            ({"STACK_FAKE_FAIL_OLLAMA_SERVICE": "ollama-llm"}, "inference", "ollama-llm"),
+            (
+                {"STACK_FAKE_FAIL_OLLAMA_SERVICE": "ollama-embedding"},
+                "inference", "ollama-embedding",
+            ),
+        ):
+            with self.subTest(failure=failure_env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_script("health.sh", profile, **failure_env)
+                self.assertNotEqual(0, result.returncode)
+                self.assertTrue(self.log.exists())
+                self.assertIn(
+                    service,
+                    [call[call.index("-T") + 1] for call in self.docker_calls() if "exec" in call],
+                )
 
     def test_status_reports_compose_and_docker_usage(self):
         result = self.run_script("stack.sh", "status")
@@ -323,6 +501,194 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.assertEqual(0, below.returncode, below.stderr)
         self.assertIn("host memory", below.stderr)
         self.assertIn("up", self.docker_calls()[-1])
+
+    def test_preflight_checks_docker_root_for_inference(self):
+        docker_root = "/srv/docker data"
+        result = self.run_script(
+            "preflight.sh", "inference", **self.capacity_env(),
+            STACK_FAKE_DOCKER_ROOT_DIR=docker_root,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            ["docker", "info", "--format", "{{.DockerRootDir}}"],
+            self.docker_calls()[0],
+        )
+        self.assertEqual(
+            [
+                ["df", "--output=avail", "-B1", shell_path(self.root)],
+                ["df", "--output=avail", "-B1", docker_root],
+            ],
+            self.df_calls(),
+        )
+
+    def test_preflight_fails_below_twenty_gib_of_docker_storage(self):
+        result = self.run_script(
+            "preflight.sh", "inference", **self.capacity_env(),
+            STACK_FAKE_DOCKER_BYTES=str(20 * 1024**3 - 1),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "less than 20 GiB is available on the Docker storage filesystem for inference",
+            result.stderr,
+        )
+
+        self.log.unlink()
+        self.df_log.unlink()
+        boundary = self.run_script(
+            "preflight.sh", "inference", **self.capacity_env(),
+            STACK_FAKE_DOCKER_BYTES=str(20 * 1024**3),
+        )
+        self.assertEqual(0, boundary.returncode, boundary.stderr)
+
+    def test_preflight_preserves_release_storage_boundaries_and_probe_failures(self):
+        ten_gib = self.run_script(
+            "preflight.sh", "core", **self.capacity_env(),
+            STACK_FAKE_RELEASE_BYTES=str(10 * 1024**3),
+        )
+        self.assertEqual(0, ten_gib.returncode, ten_gib.stderr)
+        self.assertIn("less than 20 GiB of disk space", ten_gib.stderr)
+
+        self.log.unlink()
+        self.df_log.unlink()
+        twenty_gib = self.run_script(
+            "preflight.sh", "core", **self.capacity_env(),
+            STACK_FAKE_RELEASE_BYTES=str(20 * 1024**3),
+        )
+        self.assertEqual(0, twenty_gib.returncode, twenty_gib.stderr)
+        self.assertNotIn("disk space", twenty_gib.stderr)
+
+        for probe_env in (
+            {"STACK_FAKE_RELEASE_BYTES": "not-a-number"},
+            {"STACK_FAKE_DF_FAIL_TARGET": shell_path(self.root)},
+        ):
+            with self.subTest(probe=probe_env):
+                self.log.unlink(missing_ok=True)
+                self.df_log.unlink(missing_ok=True)
+                result = self.run_script(
+                    "preflight.sh", "core", **self.capacity_env(), **probe_env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    f"could not determine free disk space for {shell_path(self.root)}",
+                    result.stderr,
+                )
+
+    def test_preflight_warns_but_does_not_fail_memory_overcommit(self):
+        tiny_meminfo = self.root / "tiny-inference-meminfo"
+        tiny_meminfo.write_text("MemTotal: 1048576 kB\n", encoding="ascii")
+        capacity = self.capacity_env()
+        capacity["MEMINFO_FILE"] = shell_path(tiny_meminfo)
+        result = self.run_script(
+            "preflight.sh", "inference", **capacity,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(
+            "selected service memory limits plus 2 GiB host overhead exceed host memory",
+            result.stderr,
+        )
+
+    def test_preflight_rejects_docker_root_and_storage_probe_errors(self):
+        cases = (
+            ({"STACK_FAKE_DOCKER_INFO_ERROR": "1"}, "Docker storage root"),
+            ({"STACK_FAKE_DOCKER_ROOT_DIR": ""}, "Docker storage root"),
+            ({"STACK_FAKE_DOCKER_BYTES": "not-a-number"}, "Docker storage"),
+            ({"STACK_FAKE_DF_FAIL_TARGET": "/var/lib/docker"}, "Docker storage"),
+        )
+        for env, message in cases:
+            with self.subTest(env=env):
+                if self.log.exists():
+                    self.log.unlink()
+                if self.df_log.exists():
+                    self.df_log.unlink()
+                result = self.run_script(
+                    "preflight.sh", "inference", **self.capacity_env(), **env
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(message, result.stderr)
+
+    def test_preflight_skips_docker_info_without_inference(self):
+        result = self.run_script("preflight.sh", "core", **self.capacity_env())
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("info", [argument for call in self.docker_calls() for argument in call])
+        self.assertEqual(1, len(self.df_calls()))
+
+    def test_preflight_honors_compose_override_for_held_release_inputs(self):
+        compose_log = self.root / "compose-override.log"
+        compose_override = self.root / "compose-override.sh"
+        compose_override.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$STACK_FAKE_COMPOSE_OVERRIDE_LOG"
+printf '%s\\n' '{"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912}}}'
+""",
+            encoding="utf-8",
+        )
+        compose_override.chmod(0o755)
+        result = self.run_script(
+            "preflight.sh", "core", **self.capacity_env(),
+            STACK_COMPOSE_SCRIPT=shell_path(compose_override),
+            STACK_FAKE_COMPOSE_OVERRIDE_LOG=shell_path(compose_log),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "core -- config --format json",
+            compose_log.read_text(encoding="utf-8").strip(),
+        )
+        self.assertFalse(self.log.exists())
+
+    def test_preflight_uses_exact_memory_sum_filter(self):
+        jq_log = self.root / "jq.log"
+        result = self.run_script(
+            "preflight.sh", "core", **self.capacity_env(),
+            STACK_FAKE_JQ_LOG=shell_path(jq_log),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(jq_log.exists(), "memory-summing jq invocation was not logged")
+        self.assertEqual(
+            [
+                "--args",
+                "[.services[$ARGS.positional[]].mem_limit // 0 | tonumber] | add // 0",
+                "app-postgres",
+                "app-redis",
+            ],
+            json.loads(jq_log.read_text(encoding="utf-8")),
+        )
+
+    def test_stack_honors_compose_override_and_runs_preflight_once_before_exact_up(self):
+        result = self.run_script(
+            "stack.sh", "up", "inference", **self.capacity_env(),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertEqual(1, sum(call[1:3] == ["info", "--format"] for call in calls))
+        self.assertEqual(1, sum("config" in call for call in calls))
+        self.assertEqual(["up", "-d", "--wait", "--build"], calls[-1][-4:])
+
+        override_log = self.root / "stack-compose-override.log"
+        override = self.root / "stack-compose-override.sh"
+        override.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$STACK_FAKE_COMPOSE_OVERRIDE_LOG"
+if [[ " $* " == *" config "* ]]; then
+  printf '%s\\n' '{"services":{"app-postgres":{"mem_limit":1073741824},"app-redis":{"mem_limit":536870912}}}'
+fi
+""",
+            encoding="utf-8",
+        )
+        override.chmod(0o755)
+        self.log.unlink()
+        result = self.run_script(
+            "stack.sh", "up", "core", **self.capacity_env(),
+            STACK_COMPOSE_SCRIPT=shell_path(override),
+            STACK_FAKE_COMPOSE_OVERRIDE_LOG=shell_path(override_log),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            ["core -- config --format json", "core -- up -d --wait --build"],
+            override_log.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertFalse(self.log.exists())
 
 
 if __name__ == "__main__":

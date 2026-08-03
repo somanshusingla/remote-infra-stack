@@ -12,6 +12,7 @@ stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
 runtime_env=${STACK_RUNTIME_ENV_FILE:-$stack_root/runtime/.env}
 compose_script=${STACK_COMPOSE_SCRIPT:-$script_dir/compose.sh}
 curl_bin=${CURL_BIN:-curl}
+jq_bin=${JQ_BIN:-jq}
 
 (($# > 0)) || die "usage: health.sh profile..."
 profiles=("$@")
@@ -20,10 +21,12 @@ declare -A selected=()
 for profile in "${profiles[@]}"; do
   case "$profile" in
     core) profile_services=(app-postgres app-redis) ;;
-    vector) profile_services=(chroma) ;;
+    vector) profile_services=(chroma chroma-admin) ;;
     search) profile_services=(opensearch opensearch-dashboards) ;;
     observability) profile_services=(langfuse-postgres langfuse-redis clickhouse minio langfuse-worker langfuse-web) ;;
     tools) profile_services=(pgadmin redisinsight) ;;
+    dynamodb) profile_services=(dynamodb-local dynamodb-admin) ;;
+    inference) profile_services=(ollama-llm ollama-embedding) ;;
     *) die "unknown profile: $profile" ;;
   esac
   [[ -z "${selected[$profile]+x}" ]] || die "duplicate profile: $profile"
@@ -34,13 +37,13 @@ if [[ -n "${selected[tools]+x}" && -z "${selected[core]+x}" ]]; then
   die "tools requires core"
 fi
 
-command -v jq >/dev/null 2>&1 || die "required command is unavailable: jq"
+command -v "$jq_bin" >/dev/null 2>&1 || die "required command is unavailable: jq"
 ps_output=$(bash "$compose_script" "${profiles[@]}" -- ps --all --format json) ||
   die "could not read Compose container health"
-ps_json=$(jq -c -s '[.[] | if type == "array" then .[] else . end]' <<<"$ps_output") ||
+ps_json=$("$jq_bin" -c -s '[.[] | if type == "array" then .[] else . end]' <<<"$ps_output") ||
   die "Compose returned invalid JSON health data"
 for service in "${services[@]}"; do
-  if ! jq -e --arg service "$service" \
+  if ! "$jq_bin" -e --arg service "$service" \
     '([.[] | select(.Service == $service)]) as $matching |
      ($matching | length) > 0 and
      all($matching[]; .State == "running" and .Health == "healthy")' \
@@ -70,6 +73,18 @@ if [[ -n "${selected[core]+x}" ]]; then
 fi
 if [[ -n "${selected[vector]+x}" ]]; then
   http_get http://127.0.0.1:18000/api/v2/heartbeat
+  http_get http://127.0.0.1:18001
+fi
+if [[ -n "${selected[dynamodb]+x}" ]]; then
+  dynamodb_check="const { DynamoDBClient, ListTablesCommand } = require('@aws-sdk/client-dynamodb'); const client = new DynamoDBClient({ endpoint: process.env.DYNAMO_ENDPOINT, region: process.env.AWS_REGION, credentials: { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY } }); client.send(new ListTablesCommand({ Limit: 1 })).then(() => client.destroy()).catch(error => { console.error(error); client.destroy(); process.exit(1); });"
+  compose_exec dynamodb-admin node -e "$dynamodb_check" >/dev/null
+  http_get http://127.0.0.1:18003
+fi
+if [[ -n "${selected[inference]+x}" ]]; then
+  http_get http://127.0.0.1:11440/api/version
+  http_get http://127.0.0.1:11441/api/version
+  compose_exec ollama-llm /bin/sh -c 'exec /bin/ollama show "$OLLAMA_MODEL"' >/dev/null
+  compose_exec ollama-embedding /bin/sh -c 'exec /bin/ollama show "$OLLAMA_MODEL"' >/dev/null
 fi
 if [[ -n "${selected[search]+x}" ]]; then
   opensearch_password=$(env_value OPENSEARCH_INITIAL_ADMIN_PASSWORD) ||
