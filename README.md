@@ -62,6 +62,9 @@ operator responsibility.
 Ubuntu 26.04 bootstrap and pinned `linux/amd64` image manifests were verified on a
 minimal GCP VM; the sanitized evidence is in
 [docs/verification/task-7-ubuntu-bootstrap.md](docs/verification/task-7-ubuntu-bootstrap.md).
+The `core vector dynamodb inference` profiles were subsequently deployed and exercised
+on a 64 GiB GCP VM; that sanitized acceptance record is in
+[docs/verification/data-and-inference-gcp-smoke.md](docs/verification/data-and-inference-gcp-smoke.md).
 Support for a future Ubuntu LTS is capability-gated, not promised by version number:
 the bootstrap proceeds only when Docker's official Docker apt repository exists for
 the detected codename and all required packages are available. Container publishers

@@ -451,6 +451,72 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertNotIn("48 GiB is the practical minimum", operations)
         self.assertNotIn("64 GiB is preferred", operations)
 
+    def test_readme_links_data_and_inference_gcp_evidence(self):
+        readme = self.read_document("README.md")
+
+        self.assertIn(
+            "[docs/verification/data-and-inference-gcp-smoke.md]"
+            "(docs/verification/data-and-inference-gcp-smoke.md)",
+            readme,
+        )
+
+    def test_gcp_smoke_evidence_records_acceptance_contract(self):
+        evidence = self.read_document(
+            "docs/verification/data-and-inference-gcp-smoke.md"
+        )
+
+        required_literals = (
+            "high-mem-64-gb-us-east-1",
+            "us-east1-c",
+            "e2-highmem-8",
+            "Ubuntu 26.04 LTS",
+            "core vector dynamodb inference",
+            "c74a84896266b9978764eeb3b8f42c344767ad28",
+            "20260803T073926Z-c74a84896266-b791db2d7f6c467c953392ee7e92a6a4",
+            "app-postgres",
+            "app-redis",
+            "chroma",
+            "chroma-admin",
+            "dynamodb-local",
+            "dynamodb-admin",
+            "ollama-llm",
+            "ollama-embedding",
+            "127.0.0.1:5432",
+            "127.0.0.1:6379",
+            "http://127.0.0.1:18000",
+            "http://127.0.0.1:18001",
+            "http://127.0.0.1:18002",
+            "http://127.0.0.1:18003",
+            "http://127.0.0.1:11440",
+            "http://127.0.0.1:11441",
+            "gemma4:e4b",
+            "embeddinggemma:300m",
+            "768",
+            "cache reuse",
+            "cleaned",
+            "No secret values",
+            "No ephemeral IP",
+            "linux/amd64 child manifest",
+            "docker.io/library/node:20.19.2-bookworm-slim@sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
+            "docker.io/amazon/dynamodb-local:3.3.0@sha256:d89f8fcc6b1a39cb35976c248ed42a28c66ae00dc043099210f5571e42648ab4",
+            "docker.io/aaronshaf/dynamodb-admin:5.3.4@sha256:ac41724cd99706256d405a14a5fb96f51f18c41a630c84fa3357f900cbd16d2e",
+            "docker.io/ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131",
+        )
+        for literal in required_literals:
+            with self.subTest(literal=literal):
+                self.assertIn(literal, evidence)
+
+        self.assertRegex(evidence, re.compile(r"six\s+named volumes"))
+        self.assertRegex(
+            evidence,
+            re.compile(r"browser\s+automation was unavailable"),
+        )
+
+        recorded_ipv4_addresses = set(
+            re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", evidence)
+        )
+        self.assertEqual({"127.0.0.1"}, recorded_ipv4_addresses)
+
 
 if __name__ == "__main__":
     unittest.main()
