@@ -7,12 +7,47 @@ GCP, firewall, IAM, or networking resources.
 Before starting, provide an SSH-accessible official Ubuntu 22.04, 24.04, or 26.04 LTS
 minimal VM on `amd64`. The login user needs passwordless `sudo`; systemd and apt must be
 available. Allow inbound SSH from the local machine, but do not open any database, API,
-or UI port. Based on the full-stack Ubuntu 26.04 smoke test, 32 GiB is recommended when running all profiles.
-A smaller VM may work when fewer profiles are selected; monitor actual workload usage.
+or UI port. 32 GiB does not guarantee that all profiles fit at peak. Select only
+the profiles needed for the current project, monitor actual usage, and resize the VM or
+raise the documented container limits when the workload requires it.
 
-The examples deliberately select all profiles. `tools` requires `core`.
+The examples select `core vector dynamodb inference`. Add `search`, `observability`, or
+`tools` as needed; `tools` requires `core`.
 The local Bash workflow also requires OpenSSL because `init-env.sh` generates secrets
 before `check.sh` can validate the repository.
+
+## Upgrade existing ignored configuration
+
+The ignored `.env` carries generated credentials, while `remote.env` carries the SSH
+target and local tunnel choices. Preserve both files across repository upgrades. Do not
+run `init-env --force` or `init-env.ps1 -Force` during an upgrade because that replaces
+the existing `.env` instead of merging new defaults.
+
+Manually append these seven non-secret keys to an existing `.env` when absent:
+
+```dotenv
+CHROMA_ADMIN_MEMORY=512m
+DYNAMODB_MEMORY=1g
+DYNAMODB_ADMIN_MEMORY=512m
+OLLAMA_LLM_MEMORY=14g
+OLLAMA_EMBEDDING_MEMORY=2g
+OLLAMA_CONTEXT_LENGTH=8192
+OLLAMA_KEEP_ALIVE=5m
+```
+
+Manually append these five keys to an existing `remote.env` when absent:
+
+```dotenv
+LOCAL_CHROMA_ADMIN_PORT=18001
+LOCAL_DYNAMODB_PORT=18002
+LOCAL_DYNAMODB_ADMIN_PORT=18003
+LOCAL_OLLAMA_LLM_PORT=11440
+LOCAL_OLLAMA_EMBEDDING_PORT=11441
+```
+
+Set `REMOTE_HOST` only in the ignored `remote.env`. Use a DNS name, SSH-config alias, or
+an address refreshed outside this repository; do not hardcode a cloud VM IP or zone in
+Compose or the committed scripts.
 
 ## macOS/Linux (Bash)
 
@@ -36,7 +71,7 @@ and copied `remote.env` are ignored secrets/configuration and must remain untrac
 ### 2. Check the selected profiles
 
 ```bash
-./scripts/check.sh core vector search observability tools
+./scripts/check.sh core vector dynamodb inference
 ```
 
 The check is local and non-mutating. It verifies configuration, dependencies, syntax,
@@ -56,16 +91,20 @@ you need to repair prerequisites.
 ### 4. Deploy the selected profiles
 
 ```bash
-./scripts/deploy.sh core vector search observability tools
+./scripts/deploy.sh core vector dynamodb inference
 ```
 
 Deployment uploads the clean committed Git release and `.env` separately, starts the
 selected profiles, waits for health checks, and only then activates the release.
+On the first `inference` deployment this wait includes downloading and verifying
+`gemma4:e4b` and `embeddinggemma:300m`; it can take a long time on a CPU VM. If the pull
+or deployment is interrupted, run the same deploy command again. Each Ollama container
+resumes or reuses the partial model layers in its own named volume.
 
 ### 5. Start the SSH tunnel
 
 ```bash
-./scripts/tunnel.sh core vector search observability tools
+./scripts/tunnel.sh core vector dynamodb inference
 ```
 
 Keep this terminal open. The command blocks while forwarding only the selected
@@ -85,6 +124,35 @@ OPENSEARCH_URL=https://127.0.0.1:9200
 LANGFUSE_BASE_URL=http://127.0.0.1:3000
 ```
 
+For Chroma Admin, browse to `http://127.0.0.1:18001` and enter the one-time internal
+Compose address `http://chroma:8000`. Local SDKs still use the tunneled Chroma API at
+`http://127.0.0.1:18000`.
+
+DynamoDB Local uses non-secret dummy credentials:
+
+```python
+import boto3
+
+dynamodb = boto3.client(
+    "dynamodb",
+    endpoint_url="http://127.0.0.1:18002",
+    region_name="us-east-1",
+    aws_access_key_id="local",  # AWS_ACCESS_KEY_ID=local
+    aws_secret_access_key="local",
+)
+print(dynamodb.list_tables(Limit=10))
+```
+
+Call the two isolated Ollama APIs independently:
+
+```bash
+curl http://127.0.0.1:11440/api/chat \
+  -d '{"model":"gemma4:e4b","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+
+curl http://127.0.0.1:11441/api/embed \
+  -d '{"model":"embeddinggemma:300m","input":"hello from the remote stack"}'
+```
+
 Use the generated values from `.env` for application database passwords and the
 OpenSearch `admin` login. Create Langfuse project API keys in the Langfuse UI after its
 first startup, then store those keys only in the consuming application's environment.
@@ -96,7 +164,7 @@ first startup, then store those keys only in the consuming application's environ
 ./scripts/stack.sh logs search
 ./scripts/stack.sh stop search
 ./scripts/stack.sh down
-./scripts/stack.sh up core vector search observability tools
+./scripts/stack.sh up core vector dynamodb inference
 ```
 
 `logs` follows one profile or service until interrupted. `stop` affects only the named
@@ -134,7 +202,7 @@ and copied `remote.env` are ignored secrets/configuration and must remain untrac
 ### 2. Check the selected profiles
 
 ```powershell
-.\scripts\check.ps1 core vector search observability tools
+.\scripts\check.ps1 core vector dynamodb inference
 ```
 
 The check is local and non-mutating. It verifies configuration, dependencies,
@@ -155,16 +223,18 @@ you need to repair prerequisites.
 ### 4. Deploy the selected profiles
 
 ```powershell
-.\scripts\deploy.ps1 core vector search observability tools
+.\scripts\deploy.ps1 core vector dynamodb inference
 ```
 
 Deployment uploads the clean committed Git release and `.env` separately, starts the
 selected profiles, waits for health checks, and only then activates the release.
+On first use, the wait includes both model downloads. If it is interrupted, run this
+same deployment command again; the named Ollama caches preserve reusable layers.
 
 ### 5. Start the SSH tunnel
 
 ```powershell
-.\scripts\tunnel.ps1 core vector search observability tools
+.\scripts\tunnel.ps1 core vector dynamodb inference
 ```
 
 Keep this PowerShell window open. The command blocks while forwarding only the selected
@@ -184,6 +254,23 @@ OPENSEARCH_URL=https://127.0.0.1:9200
 LANGFUSE_BASE_URL=http://127.0.0.1:3000
 ```
 
+Open `http://127.0.0.1:18001` for Chroma Admin and enter
+`http://chroma:8000` as its internal connection URL. DynamoDB and Ollama clients use
+the same loopback addresses as the Bash workflow. Invoke the two Ollama APIs natively
+from PowerShell as follows:
+
+```powershell
+$chat = @{
+  model = 'gemma4:e4b'
+  messages = @(@{ role = 'user'; content = 'Hello' })
+  stream = $false
+} | ConvertTo-Json -Depth 4
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11440/api/chat' -ContentType 'application/json' -Body $chat
+
+$embed = @{ model = 'embeddinggemma:300m'; input = 'hello from the remote stack' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11441/api/embed' -ContentType 'application/json' -Body $embed
+```
+
 Use the generated values from `.env` for application database passwords and the
 OpenSearch `admin` login. Create Langfuse project API keys in the Langfuse UI after its
 first startup, then store those keys only in the consuming application's environment.
@@ -195,7 +282,7 @@ first startup, then store those keys only in the consuming application's environ
 .\scripts\stack.ps1 logs search
 .\scripts\stack.ps1 stop search
 .\scripts\stack.ps1 down
-.\scripts\stack.ps1 up core vector search observability tools
+.\scripts\stack.ps1 up core vector dynamodb inference
 ```
 
 `logs` follows one profile or service until interrupted. `stop` affects only the named
@@ -219,7 +306,12 @@ The defaults below exist only while the matching SSH tunnel is running.
 | --- | --- | --- | --- |
 | `core` | Application PostgreSQL | `127.0.0.1:5432` | User/database `app`; password from `.env` |
 | `core` | Application Redis | `127.0.0.1:6379` | Password from `.env` |
-| `vector` | Chroma API | `http://127.0.0.1:18000` | No official bundled UI or built-in authentication |
+| `vector` | Chroma API | `http://127.0.0.1:18000` | No built-in authentication |
+| `vector` | `chroma-admin` | `http://127.0.0.1:18001` | Unofficial UI; use `http://chroma:8000` internally |
+| `dynamodb` | DynamoDB Local | `http://127.0.0.1:18002` | API with dummy local credentials |
+| `dynamodb` | `dynamodb-admin` | `http://127.0.0.1:18003` | Browser UI |
+| `inference` | Ollama chat | `http://127.0.0.1:11440` | `gemma4:e4b` API |
+| `inference` | Ollama embeddings | `http://127.0.0.1:11441` | `embeddinggemma:300m` API |
 | `search` | OpenSearch API | `https://127.0.0.1:9200` | User `admin`; password from `.env`; development certificate |
 | `search` | OpenSearch Dashboards | `http://127.0.0.1:5601` | ELK-style UI; OpenSearch admin login |
 | `observability` | Langfuse | `http://127.0.0.1:3000` | Create account/project and API keys in UI |
@@ -231,7 +323,26 @@ The defaults below exist only while the matching SSH tunnel is running.
 OpenSearch's security plugin remains enabled, but the bundled TLS certificate is for
 development. Explicitly trust it or disable verification only in development clients.
 Chroma has no authentication layer; SSH and the VM/local loopback bindings are its only
-protection. Never publish Chroma or any other service through a public cloud firewall.
+protection. Never change host-side `127.0.0.1` publications or tunnel listeners to
+`0.0.0.0`, and never publish Chroma or any other service through a public cloud
+firewall. The `dynamodb-admin` container's internal listener does not make its
+host-published port public.
+
+## Capacity and first-pull behavior
+
+The release root must have at least 10 GiB free; below 20 GiB produces a warning.
+Selecting `inference` also requires at least 20 GiB free on Docker's storage
+filesystem. Model images and caches can therefore need more disk than the Git release
+archive itself.
+
+Ollama is CPU-only in this stack. `gemma4:e4b` has a 14 GiB container memory limit and
+`embeddinggemma:300m` has a 2 GiB limit; these are ceilings rather than reservations.
+First-token and embedding latency can be high on general-purpose CPUs, and loading the
+chat model adds another delay. The remote preflight warns when the selected limits plus
+2 GiB host overhead exceed host memory, but it does not reject the deployment. Select
+fewer profiles, increase `OLLAMA_LLM_MEMORY` or another service's limit only when
+measurement justifies it, and resize the VM when the selected peak workload does not
+fit.
 
 ## Data lifecycle and recovery boundary
 
@@ -239,9 +350,11 @@ Persistent services use stable named Docker volumes. Routine deployment, `stop`,
 release pruning, and `down` preserve those named volumes. Code releases can therefore
 change without intentionally resetting service data.
 
-The data is disposable: no backup/export automation is provided, and there is no
-automated restore or cross-VM migration workflow. Back up anything important using a
-service-specific process outside this repository before making destructive changes.
+The data is disposable: no backup/export automation or script is provided, and there
+is no automated restore or cross-VM migration workflow. Closing/deleting the VM or its
+disk may delete every named volume; that is an accepted boundary for this personal
+stack. Back up anything important using a service-specific process outside this
+repository before making destructive changes.
 
 `destroy` causes irreversible permanent data loss by removing project volumes. Deleting
 or rebuilding the VM can have the same result. Do not run `destroy` as a
@@ -253,12 +366,17 @@ data.
 For a newly prepared VM, validate in stages so failures stay attributable:
 
 1. Deploy `core vector`, open that tunnel, and verify PostgreSQL, authenticated Redis,
-   and the Chroma heartbeat from the local machine.
-2. Deploy `search`, reopen/add the `search` tunnel, then verify the authenticated
+   the Chroma heartbeat, and `chroma-admin` using `http://chroma:8000`.
+2. Deploy `dynamodb`, reopen/add that tunnel, then verify the DynamoDB SDK example and
+   `dynamodb-admin` UI with `AWS_ACCESS_KEY_ID=local` and its matching dummy secret.
+3. Deploy `inference`, wait for both model pulls, reopen/add that tunnel, then run the
+   Ollama chat and embed examples. Re-run deploy to verify cached model reuse.
+4. Deploy `search`, reopen/add the `search` tunnel, then verify the authenticated
    OpenSearch API and OpenSearch Dashboards.
-3. Deploy `core observability tools`, reopen/add those tunnels, then verify Langfuse,
+5. Deploy `core observability tools`, reopen/add those tunnels, then verify Langfuse,
    the MinIO Console, pgAdmin, and RedisInsight.
-4. Run `status`, then `down`, then `up core vector search observability tools` and
+6. Run `status`, then `down`, then
+   `up core vector search observability tools dynamodb inference` and
    repeat endpoint checks.
 
 Do not run `destroy` during a smoke test. Keep live command output and any secret-bearing
