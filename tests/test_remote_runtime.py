@@ -41,6 +41,23 @@ class RemoteRuntimeTests(unittest.TestCase):
         write_test_env(self.root / "runtime/.env")
         self.log = self.root / "docker.log"
         self.df_log = self.root / "df.log"
+        self.sysctl_log = self.root / "sysctl.log"
+        self.fake_sysctl = self.root / "sysctl"
+        self.fake_sysctl.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'sysctl'
+  printf ' %q' "$@"
+  printf '\n'
+} >>"$STACK_SYSCTL_LOG"
+[[ "$#" == 2 && "$1" == -n && "$2" == net.ipv4.ip_forward ]] || exit 72
+[[ "${STACK_FAKE_SYSCTL_ERROR:-0}" == 0 ]] || exit 73
+printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
+""",
+            encoding="utf-8",
+        )
+        self.fake_sysctl.chmod(0o755)
         self.fake_df = self.root / "df"
         self.fake_df.write_text(
             """#!/usr/bin/env bash
@@ -77,7 +94,9 @@ printf 'Avail\\n%s\\n' "$available"
             "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
             "JQ_BIN": shell_path(repo_path("tests/fakes/jq")),
             "FREE_BIN": shell_path(self.fake_free),
+            "SYSCTL_BIN": shell_path(self.fake_sysctl),
             "STACK_DOCKER_LOG": shell_path(self.log),
+            "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
         }
 
     def tearDown(self):
@@ -101,6 +120,12 @@ printf 'Avail\\n%s\\n' "$available"
 
     def df_calls(self):
         return [shlex.split(line) for line in self.df_log.read_text(encoding="utf-8").splitlines()]
+
+    def sysctl_calls(self):
+        return [
+            shlex.split(line)
+            for line in self.sysctl_log.read_text(encoding="utf-8").splitlines()
+        ]
 
     def test_compose_builds_canonical_command_with_ordered_profiles(self):
         result = self.run_script("compose.sh", "core", "vector", "--", "config", "--quiet")
@@ -510,6 +535,10 @@ printf 'Avail\\n%s\\n' "$available"
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
+            [["sysctl", "-n", "net.ipv4.ip_forward"]],
+            self.sysctl_calls(),
+        )
+        self.assertEqual(
             ["docker", "info", "--format", "{{.DockerRootDir}}"],
             self.docker_calls()[0],
         )
@@ -520,6 +549,33 @@ printf 'Avail\\n%s\\n' "$available"
             ],
             self.df_calls(),
         )
+
+    def test_preflight_rejects_disabled_or_unreadable_ipv4_forwarding_before_other_probes(self):
+        cases = (
+            ({"STACK_FAKE_IP_FORWARD": "0"}, "found 0"),
+            ({"STACK_FAKE_IP_FORWARD": "2"}, "found 2"),
+            ({"STACK_FAKE_IP_FORWARD": ""}, "found empty"),
+            ({"STACK_FAKE_SYSCTL_ERROR": "1"}, "could not read"),
+        )
+        for env, message in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                self.df_log.unlink(missing_ok=True)
+                self.sysctl_log.unlink(missing_ok=True)
+
+                result = self.run_script(
+                    "preflight.sh", "core", **self.capacity_env(), **env
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("net.ipv4.ip_forward must equal 1", result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(
+                    [["sysctl", "-n", "net.ipv4.ip_forward"]],
+                    self.sysctl_calls(),
+                )
+                self.assertFalse(self.df_log.exists())
+                self.assertFalse(self.log.exists())
 
     def test_preflight_fails_below_twenty_gib_of_docker_storage(self):
         result = self.run_script(

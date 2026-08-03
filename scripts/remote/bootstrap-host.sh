@@ -98,7 +98,7 @@ write_root_file() {
 }
 
 prerequisite_packages=(
-  ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3
+  ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3 procps
 )
 conflicting_packages=(
   docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc
@@ -147,14 +147,35 @@ elif ! id -nG "$target_user" | tr ' ' '\n' | grep --fixed-strings --line-regexp 
   die "Docker group membership verification failed for user $target_user"
 fi
 
-write_root_file /etc/sysctl.d/99-remote-infra-stack.conf 'vm.max_map_count=262144'
+host_sysctl_config=$(cat <<'EOF'
+vm.max_map_count=262144
+net.ipv4.ip_forward=1
+EOF
+)
+write_root_file /etc/sysctl.d/99-remote-infra-stack.conf "$host_sysctl_config"
 run_root sysctl --system
+
+verify_sysctl_setting() {
+  local key=$1
+  local expected=$2
+  local actual
+
+  if [[ "$dry_run" == 1 ]]; then
+    printf '+ verify sysctl %q equals %q\n' "$key" "$expected"
+    run_root sysctl -n "$key"
+    return
+  fi
+  actual=$(run_root sysctl -n "$key") || die "could not read $key after applying host kernel settings"
+  [[ "$actual" == "$expected" ]] ||
+    die "$key verification failed; expected $expected, found ${actual:-empty}"
+}
 
 if [[ "$dry_run" == 1 ]]; then
   run_root docker version
   run_root docker compose version
   run_root systemctl is-active docker
-  run_root sysctl -n vm.max_map_count
+  verify_sysctl_setting vm.max_map_count 262144
+  verify_sysctl_setting net.ipv4.ip_forward 1
   printf 'Dry run complete; no privileged changes were executed.\n'
   exit 0
 fi
@@ -162,7 +183,7 @@ fi
 run_root docker version
 run_root docker compose version
 run_root systemctl is-active --quiet docker || die "Docker service is not active"
-[[ "$(run_root sysctl -n vm.max_map_count)" == 262144 ]] ||
-  die "vm.max_map_count verification failed; expected 262144"
+verify_sysctl_setting vm.max_map_count 262144
+verify_sysctl_setting net.ipv4.ip_forward 1
 printf 'Docker bootstrap complete for Ubuntu %s (%s), amd64; log out and back in for Docker group access.\n' \
   "${VERSION_ID:-unknown}" "$codename"

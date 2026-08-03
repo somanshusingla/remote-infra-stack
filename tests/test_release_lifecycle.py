@@ -38,12 +38,30 @@ class ReleaseLifecycleTests(unittest.TestCase):
         write_test_env(self.root / "runtime/.env")
         self.env_counter = 0
         self.log = self.root / "docker.log"
+        self.sysctl_log = self.root / "sysctl.log"
+        self.fake_sysctl = self.root / "sysctl"
+        self.fake_sysctl.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+{
+  printf 'sysctl'
+  printf ' %q' "$@"
+  printf '\n'
+} >>"$STACK_SYSCTL_LOG"
+[[ "$#" == 2 && "$1" == -n && "$2" == net.ipv4.ip_forward ]] || exit 72
+printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
+""",
+            encoding="utf-8",
+        )
+        self.fake_sysctl.chmod(0o755)
         self.env = {
             **os.environ,
             "PATH": f"{shell_path(repo_path('tests/fakes'))}{os.pathsep}{os.environ.get('PATH', '')}",
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
             "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
+            "SYSCTL_BIN": shell_path(self.fake_sysctl),
             "STACK_DOCKER_LOG": shell_path(self.log),
+            "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
         }
 
     def tearDown(self):
@@ -113,6 +131,12 @@ class ReleaseLifecycleTests(unittest.TestCase):
         return [
             shlex.split(line)
             for line in self.log.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def sysctl_calls(self):
+        return [
+            shlex.split(line)
+            for line in self.sysctl_log.read_text(encoding="utf-8").splitlines()
         ]
 
     def compose_calls(self, operation):
@@ -346,6 +370,35 @@ class ReleaseLifecycleTests(unittest.TestCase):
             "config", "preflight", "pull --ignore-buildable",
             "build --pull chroma-admin", "up -d --wait", "health",
         ], operations)
+
+    def test_deploy_rejects_disabled_ipv4_forwarding_before_image_or_container_mutation(self):
+        archive, checksum, _ = self.make_archive(
+            "20260802T115850Z-forwarding-disabled"
+        )
+
+        result = self.deploy(
+            archive, checksum, "core", STACK_FAKE_IP_FORWARD="0"
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("net.ipv4.ip_forward must equal 1; found 0", result.stderr)
+        self.assertEqual(
+            [["sysctl", "-n", "net.ipv4.ip_forward"]], self.sysctl_calls()
+        )
+        calls = self.docker_calls()
+        self.assertEqual(1, sum("config" in call for call in calls))
+        cleanup = [call for call in calls if "rm" in call]
+        self.assertEqual(1, len(cleanup))
+        self.assertEqual(
+            ["rm", "-sf", "app-postgres", "app-redis"], cleanup[0][-4:]
+        )
+        self.assertNotIn("-v", cleanup[0])
+        self.assertNotIn("--volumes", cleanup[0])
+        for operation in ("pull", "build", "up", "ps"):
+            self.assertFalse(
+                any(operation in call for call in calls),
+                f"unexpected {operation} after forwarding preflight failure: {calls}",
+            )
 
     def test_non_vector_deploy_does_not_build_chroma_admin(self):
         archive, checksum, _ = self.make_archive("20260802T115900Z-no-build")

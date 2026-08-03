@@ -43,8 +43,15 @@ compose() {
 df_bin=${DF_BIN:-df}
 jq_bin=${JQ_BIN:-jq}
 docker_bin=${DOCKER_BIN:-docker}
+sysctl_bin=${SYSCTL_BIN:-sysctl}
 meminfo_file=${MEMINFO_FILE:-/proc/meminfo}
 command -v "$jq_bin" >/dev/null 2>&1 || die "required command is unavailable: jq"
+
+if ! ip_forward=$("$sysctl_bin" -n net.ipv4.ip_forward 2>/dev/null); then
+  die "net.ipv4.ip_forward must equal 1; could not read the kernel setting"
+fi
+[[ "$ip_forward" == 1 ]] ||
+  die "net.ipv4.ip_forward must equal 1; found ${ip_forward:-empty}"
 
 free_bytes=$("$df_bin" --output=avail -B1 "$stack_root" 2>/dev/null | awk 'NR > 1 { value=$1 } END { print value }') ||
   die "could not determine free disk space for $stack_root"

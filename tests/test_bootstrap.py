@@ -147,6 +147,7 @@ esac
         repo_root: Path,
         mode: str = "--check",
         extra_env: dict[str, str] | None = None,
+        script_path: Path | None = None,
     ):
         with tempfile.TemporaryDirectory() as directory:
             shim_directory = Path(directory)
@@ -166,7 +167,11 @@ esac
             })
             env.update(extra_env or {})
             result = subprocess.run(
-                [self.shell, str(repo_path("scripts/remote/bootstrap-host.sh")), mode],
+                [
+                    self.shell,
+                    str(script_path or repo_path("scripts/remote/bootstrap-host.sh")),
+                    mode,
+                ],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -175,6 +180,23 @@ esac
 
     def run_check(self, fixture: str, repo_root: Path, extra_env=None):
         return self.run_bootstrap(fixture, repo_root, extra_env=extra_env)
+
+    def assert_sysctl_install_plan(self, output: str):
+        expected_fragments = (
+            "write /etc/sysctl.d/99-remote-infra-stack.conf\n"
+            "vm.max_map_count=262144\n"
+            "net.ipv4.ip_forward=1\n",
+            "sysctl --system",
+            "verify sysctl vm.max_map_count equals 262144",
+            "sysctl -n vm.max_map_count",
+            "verify sysctl net.ipv4.ip_forward equals 1",
+            "sysctl -n net.ipv4.ip_forward",
+        )
+        position = -1
+        for fragment in expected_fragments:
+            next_position = output.find(fragment, position + 1)
+            self.assertGreater(next_position, position, fragment)
+            position = next_position
 
     def test_supported_and_future_ubuntu_are_repository_gated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -253,7 +275,7 @@ esac
             )
             expected_plan = (
                 "apt-get update",
-                "apt-get install --yes ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3",
+                "apt-get install --yes ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3 procps",
                 "install -m 0755 -d /etc/apt/keyrings",
                 "curl --fail --silent --show-error --location",
                 "chmod a+r /etc/apt/keyrings/docker.asc",
@@ -271,17 +293,63 @@ esac
                 "verify Docker group membership for test-user",
                 "write /etc/sysctl.d/99-remote-infra-stack.conf",
                 "vm.max_map_count=262144",
+                "net.ipv4.ip_forward=1",
                 "sysctl --system",
                 "docker version",
                 "docker compose version",
                 "systemctl is-active docker",
+                "verify sysctl vm.max_map_count equals 262144",
                 "sysctl -n vm.max_map_count",
+                "verify sysctl net.ipv4.ip_forward equals 1",
+                "sysctl -n net.ipv4.ip_forward",
             )
             position = -1
             for fragment in expected_plan:
                 next_position = result.stdout.find(fragment, position + 1)
                 self.assertGreater(next_position, position, fragment)
                 position = next_position
+
+            self.assert_sysctl_install_plan(result.stdout)
+
+    def test_install_plan_rejects_missing_or_wrong_forwarding_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            original = repo_path("scripts/remote/bootstrap-host.sh").read_text(
+                encoding="utf-8"
+            )
+            mutations = {
+                "missing forwarding key": original.replace(
+                    "net.ipv4.ip_forward=1\n", ""
+                ),
+                "disabled forwarding value": original.replace(
+                    "net.ipv4.ip_forward=1", "net.ipv4.ip_forward=0"
+                ),
+                "wrong forwarding verification value": original.replace(
+                    "verify_sysctl_setting net.ipv4.ip_forward 1",
+                    "verify_sysctl_setting net.ipv4.ip_forward 0",
+                ),
+            }
+
+            for name, source in mutations.items():
+                with self.subTest(mutation=name):
+                    mutated = root / f"{name.replace(' ', '-')}.sh"
+                    mutated.write_text(source, encoding="utf-8", newline="\n")
+                    result, invocations = self.run_bootstrap(
+                        "ubuntu-26.04", repo, "--install", script_path=mutated
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertFalse(
+                        [
+                            line
+                            for line in invocations
+                            if line.startswith(("MUTATE", "UNEXPECTED"))
+                        ],
+                        invocations,
+                    )
+                    with self.assertRaises(AssertionError):
+                        self.assert_sysctl_install_plan(result.stdout)
 
 
 if __name__ == "__main__":

@@ -45,13 +45,14 @@ Ubuntu VM in AWS, GCP, or another provider with:
 - a direct OpenSSH/SCP route from the local machine. Only the SSH route needs a cloud
   firewall rule.
 
-The remote preflight requires at least 10 GiB free below the release root. Selecting
-`inference` additionally requires at least 20 GiB free on Docker's storage filesystem
-for the two model caches and image layers. The Compose memory values are container
-limits, not reservations. A 32 GiB host does not guarantee that all profiles fit at
-peak; select only what you need, monitor the VM, and resize the host or raise individual
-limits when real workloads require it. The CPU-only Ollama services can take minutes to
-answer on general-purpose cloud CPUs, especially while `gemma4:e4b` is loading.
+The remote preflight requires at least 10 GiB free below the release root and
+`net.ipv4.ip_forward=1` for Docker bridge egress. Selecting `inference` additionally
+requires at least 20 GiB free on Docker's storage filesystem for the two model caches
+and image layers. The Compose memory values are container limits, not reservations.
+A 32 GiB host does not guarantee that all profiles fit at peak; select only what you need,
+monitor the VM, and resize the host or raise individual limits when real workloads
+require it. The CPU-only Ollama services can take minutes to answer on general-purpose
+cloud CPUs, especially while `gemma4:e4b` is loading.
 
 Ubuntu 26.04 bootstrap and pinned `linux/amd64` image manifests were verified on a
 minimal GCP VM; the sanitized evidence is in
@@ -187,6 +188,11 @@ already in use.
 Every host-side Compose publication and SSH tunnel listener remains loopback-only.
 Never change those `127.0.0.1` bindings to `0.0.0.0`, and do not add public cloud
 firewall rules for any endpoint in this table.
+
+Enabling `net.ipv4.ip_forward` permits Docker bridge egress but does not itself publish
+a Compose port. This repository does not change iptables/UFW policy, Docker daemon
+networking, or a cloud VM's IP-forwarding setting. Access control therefore continues
+to rely on the exact loopback bindings above and an SSH-only cloud firewall.
 
 ## Configure local applications
 

@@ -215,7 +215,7 @@ The bootstrap is idempotent and supports official Ubuntu minimal cloud images. I
 It installs explicit prerequisites and Docker packages:
 
 ```text
-ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq
+ca-certificates curl gnupg tar gzip openssl util-linux coreutils jq python3 procps
 docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 docker-compose-plugin
 ```
@@ -231,8 +231,9 @@ The bootstrap:
 - Fails safely with the detected release, codename, and remediation guidance when Docker has not yet published compatible packages.
 - Removes or rejects conflicting distro Docker packages before installing Docker CE.
 - Enables Docker at boot and adds the remote user to the Docker group.
-- Persists `vm.max_map_count=262144` in a dedicated `/etc/sysctl.d` file for OpenSearch.
-- Verifies the Docker daemon, Compose v2, architecture, and kernel setting.
+- Persists `vm.max_map_count=262144` for OpenSearch and `net.ipv4.ip_forward=1` for
+  Docker bridge egress in a dedicated `/etc/sysctl.d` file.
+- Verifies the Docker daemon, Compose v2, architecture, and both kernel settings.
 
 This is a forward-compatible strategy, not a promise that an unknown future Ubuntu release will work before Docker and every container publisher support it.
 

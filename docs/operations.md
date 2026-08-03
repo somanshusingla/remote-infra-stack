@@ -84,9 +84,16 @@ the configuration without starting containers or pulling images.
 ./scripts/bootstrap.sh
 ```
 
-Bootstrap installs Docker Engine and Compose, enables Docker, and configures the
-OpenSearch kernel setting. It is idempotent. Re-run it after rebuilding the VM or when
-you need to repair prerequisites.
+Bootstrap installs Docker Engine and Compose, enables Docker, and persists both
+`vm.max_map_count=262144` for OpenSearch and `net.ipv4.ip_forward=1` for Docker bridge
+egress. It applies and verifies both settings. It is idempotent. Re-run it after
+rebuilding the VM or when you need to repair prerequisites. Deployment preflight
+refuses to start services while IPv4 forwarding is disabled.
+
+Kernel IPv4 forwarding enables Docker bridge egress; it does not publish the stack's
+ports. The repository leaves iptables/UFW, Docker daemon networking, and cloud
+IP-forwarding settings unchanged. Keep every Compose publication on `127.0.0.1` and
+allow only SSH through the cloud firewall.
 
 ### 4. Deploy the selected profiles
 
@@ -216,9 +223,16 @@ images.
 .\scripts\bootstrap.ps1
 ```
 
-Bootstrap installs Docker Engine and Compose, enables Docker, and configures the
-OpenSearch kernel setting. It is idempotent. Re-run it after rebuilding the VM or when
-you need to repair prerequisites.
+Bootstrap installs Docker Engine and Compose, enables Docker, and persists both
+`vm.max_map_count=262144` for OpenSearch and `net.ipv4.ip_forward=1` for Docker bridge
+egress. It applies and verifies both settings. It is idempotent. Re-run it after
+rebuilding the VM or when you need to repair prerequisites. Deployment preflight
+refuses to start services while IPv4 forwarding is disabled.
+
+Kernel IPv4 forwarding enables Docker bridge egress; it does not publish the stack's
+ports. The repository leaves iptables/UFW, Docker daemon networking, and cloud
+IP-forwarding settings unchanged. Keep every Compose publication on `127.0.0.1` and
+allow only SSH through the cloud firewall.
 
 ### 4. Deploy the selected profiles
 
