@@ -5,3 +5,4 @@
 *.yml text eol=lf
 *.ps1 text eol=crlf
 *.psm1 text eol=crlf
+vendor/chromadb-admin/** text=auto eol=lf
