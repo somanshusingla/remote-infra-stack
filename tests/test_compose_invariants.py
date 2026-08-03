@@ -25,6 +25,7 @@ class ComposeInvariantTests(unittest.TestCase):
             "app-postgres": "APP_POSTGRES_IMAGE",
             "app-redis": "APP_REDIS_IMAGE",
             "chroma": "CHROMA_IMAGE",
+            "chroma-admin": "remote-infra-stack/chromadb-admin:efe867c86c78",
             "opensearch": "OPENSEARCH_IMAGE",
             "opensearch-dashboards": "OPENSEARCH_DASHBOARDS_IMAGE",
             "langfuse-postgres": "LANGFUSE_POSTGRES_IMAGE",
@@ -37,8 +38,13 @@ class ComposeInvariantTests(unittest.TestCase):
             "redisinsight": "REDISINSIGHT_IMAGE",
         }
         self.assertEqual("remote-infra-stack", model["name"])
-        for name, image_variable in expected_images.items():
-            self.assertEqual(self.approved_images[image_variable], model["services"][name]["image"], name)
+        self.assertEqual(set(expected_images), set(model["services"]))
+        for name, expected_image in expected_images.items():
+            self.assertEqual(
+                self.approved_images.get(expected_image, expected_image),
+                model["services"][name]["image"],
+                name,
+            )
 
         self.assertEqual(
             "remote-infra-stack-infra",
@@ -117,11 +123,12 @@ class ComposeInvariantTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_stateful_services_use_named_volumes_and_enabled_healthchecks(mutated)
 
-    def test_services_belong_to_expected_profiles_without_cross_profile_dependencies(self):
+    def assert_services_have_expected_profiles_and_dependencies(self, model):
         expected_profiles = {
             "app-postgres": "core",
             "app-redis": "core",
             "chroma": "vector",
+            "chroma-admin": "vector",
             "opensearch": "search",
             "opensearch-dashboards": "search",
             "langfuse-postgres": "observability",
@@ -133,19 +140,41 @@ class ComposeInvariantTests(unittest.TestCase):
             "pgadmin": "tools",
             "redisinsight": "tools",
         }
-        self.assertEqual(set(expected_profiles), set(self.model["services"]))
+        expected_dependencies = {
+            "app-postgres": set(),
+            "app-redis": set(),
+            "chroma": set(),
+            "chroma-admin": {"chroma"},
+            "opensearch": set(),
+            "opensearch-dashboards": {"opensearch"},
+            "langfuse-postgres": set(),
+            "langfuse-redis": set(),
+            "clickhouse": set(),
+            "minio": set(),
+            "langfuse-worker": {"langfuse-postgres", "langfuse-redis", "clickhouse", "minio"},
+            "langfuse-web": {"langfuse-postgres", "langfuse-redis", "clickhouse", "minio"},
+            "pgadmin": {"app-postgres"},
+            "redisinsight": {"app-redis"},
+        }
+        self.assertEqual(set(expected_profiles), set(model["services"]))
+        self.assertEqual(set(expected_dependencies), set(model["services"]))
         for name, profile in expected_profiles.items():
-            self.assertEqual([profile], self.model["services"][name]["profiles"], name)
+            self.assertEqual([profile], model["services"][name]["profiles"], name)
 
-        for name, service in self.model["services"].items():
-            for dependency in service.get("depends_on", {}):
-                dependency_profile = expected_profiles[dependency]
-                service_profile = expected_profiles[name]
-                self.assertTrue(
-                    dependency_profile == service_profile
-                    or (service_profile == "tools" and dependency_profile == "core"),
-                    f"{name} unexpectedly depends on {dependency}",
-                )
+        for name, dependencies in expected_dependencies.items():
+            self.assertEqual(dependencies, set(model["services"][name].get("depends_on", {})), name)
+
+    def test_services_have_expected_profiles_and_dependencies(self):
+        self.assert_services_have_expected_profiles_and_dependencies(self.model)
+
+    def test_dependency_contract_rejects_unwanted_same_profile_edge(self):
+        mutated = deepcopy(self.model)
+        mutated["services"]["chroma-admin"]["depends_on"]["chroma-admin"] = {
+            "condition": "service_healthy",
+        }
+
+        with self.assertRaises(AssertionError):
+            self.assert_services_have_expected_profiles_and_dependencies(mutated)
 
 
 if __name__ == "__main__":
