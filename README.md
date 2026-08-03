@@ -65,6 +65,9 @@ minimal GCP VM; the sanitized evidence is in
 The `core vector dynamodb inference` profiles were subsequently deployed and exercised
 on a 64 GiB GCP VM; that sanitized acceptance record is in
 [docs/verification/data-and-inference-gcp-smoke.md](docs/verification/data-and-inference-gcp-smoke.md).
+All seven profiles and their browser UIs were then started together on that VM; the
+sanitized record is in
+[docs/verification/all-profiles-gcp-smoke.md](docs/verification/all-profiles-gcp-smoke.md).
 Support for a future Ubuntu LTS is capability-gated, not promised by version number:
 the bootstrap proceeds only when Docker's official Docker apt repository exists for
 the detected codename and all required packages are available. Container publishers

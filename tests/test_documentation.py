@@ -517,6 +517,78 @@ class DocumentationContractTests(unittest.TestCase):
         )
         self.assertEqual({"127.0.0.1"}, recorded_ipv4_addresses)
 
+    def test_readme_links_all_profiles_gcp_evidence(self):
+        readme = self.read_document("README.md")
+
+        self.assertIn(
+            "[docs/verification/all-profiles-gcp-smoke.md]"
+            "(docs/verification/all-profiles-gcp-smoke.md)",
+            readme,
+        )
+
+    def test_all_profiles_gcp_evidence_records_ui_and_service_contract(self):
+        evidence = self.read_document("docs/verification/all-profiles-gcp-smoke.md")
+
+        required_literals = (
+            "high-mem-64-gb-us-east-1",
+            "us-east1-c",
+            "e2-highmem-8",
+            "core vector search observability tools dynamodb inference",
+            "1dce504c48501c92472939c281888f89b5ee610b",
+            "20260803T081220Z-1dce504c4850-9ce1f20c776746209ea4a82e9bfec671",
+            "app-postgres",
+            "app-redis",
+            "chroma",
+            "chroma-admin",
+            "opensearch",
+            "opensearch-dashboards",
+            "langfuse-postgres",
+            "langfuse-redis",
+            "clickhouse",
+            "minio",
+            "langfuse-worker",
+            "langfuse-web",
+            "pgadmin",
+            "redisinsight",
+            "dynamodb-local",
+            "dynamodb-admin",
+            "ollama-llm",
+            "ollama-embedding",
+            "127.0.0.1:5432",
+            "127.0.0.1:6379",
+            "http://127.0.0.1:18000",
+            "http://127.0.0.1:18001",
+            "https://127.0.0.1:9200",
+            "http://127.0.0.1:5601",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:9090",
+            "http://127.0.0.1:9091",
+            "http://127.0.0.1:5050",
+            "http://127.0.0.1:5540",
+            "http://127.0.0.1:18002",
+            "http://127.0.0.1:18003",
+            "http://127.0.0.1:11440",
+            "http://127.0.0.1:11441",
+            "[data-and-inference-gcp-smoke.md]"
+            "(data-and-inference-gcp-smoke.md)",
+            "OpenSearch Dashboards",
+            "ELK-style",
+            "authenticated cluster health",
+            "disposable index",
+            "Langfuse",
+            "all 18 services healthy",
+            "No secret values",
+            "No ephemeral IP",
+        )
+        for literal in required_literals:
+            with self.subTest(literal=literal):
+                self.assertIn(literal, evidence)
+
+        recorded_ipv4_addresses = set(
+            re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", evidence)
+        )
+        self.assertEqual({"127.0.0.1"}, recorded_ipv4_addresses)
+
 
 if __name__ == "__main__":
     unittest.main()
