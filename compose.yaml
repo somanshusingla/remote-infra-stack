@@ -153,6 +153,56 @@ services:
     mem_limit: ${DYNAMODB_ADMIN_MEMORY:-512m}
     networks: [infra]
 
+  ollama-llm:
+    profiles: [inference]
+    image: ${OLLAMA_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/remote-infra/bootstrap.sh"]
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_LLM_MODEL:?set in versions.env}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    ports:
+      - "127.0.0.1:11440:11434"
+    volumes:
+      - ollama_llm_data:/root/.ollama
+      - ./config/ollama/bootstrap.sh:/opt/remote-infra/bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/remote-infra-model-ready && OLLAMA_HOST=127.0.0.1:11434 /bin/ollama show \"$$OLLAMA_MODEL\" >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 90m
+    mem_limit: ${OLLAMA_LLM_MEMORY:-14g}
+    networks: [infra]
+
+  ollama-embedding:
+    profiles: [inference]
+    image: ${OLLAMA_IMAGE:?set in versions.env}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/remote-infra/bootstrap.sh"]
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_EMBEDDING_MODEL:?set in versions.env}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    ports:
+      - "127.0.0.1:11441:11434"
+    volumes:
+      - ollama_embedding_data:/root/.ollama
+      - ./config/ollama/bootstrap.sh:/opt/remote-infra/bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/remote-infra-model-ready && OLLAMA_HOST=127.0.0.1:11434 /bin/ollama show \"$$OLLAMA_MODEL\" >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 90m
+    mem_limit: ${OLLAMA_EMBEDDING_MEMORY:-2g}
+    networks: [infra]
+
   opensearch:
     profiles: [search]
     image: ${OPENSEARCH_IMAGE:?set in versions.env}
@@ -407,6 +457,10 @@ volumes:
     name: remote-infra-stack-chroma-data
   dynamodb_data:
     name: remote-infra-stack-dynamodb-data
+  ollama_llm_data:
+    name: remote-infra-stack-ollama-llm-data
+  ollama_embedding_data:
+    name: remote-infra-stack-ollama-embedding-data
   opensearch_data:
     name: remote-infra-stack-opensearch-data
   langfuse_postgres_data:

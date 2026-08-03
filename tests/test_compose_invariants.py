@@ -5,7 +5,9 @@ from tests.helpers import read_env, render_compose, repo_path
 
 
 class ComposeInvariantTests(unittest.TestCase):
-    profiles = ("core", "vector", "search", "observability", "tools", "dynamodb")
+    profiles = (
+        "core", "vector", "search", "observability", "tools", "dynamodb", "inference",
+    )
 
     @classmethod
     def setUpClass(cls):
@@ -28,6 +30,8 @@ class ComposeInvariantTests(unittest.TestCase):
             "chroma-admin": "remote-infra-stack/chromadb-admin:efe867c86c78",
             "dynamodb-local": "DYNAMODB_LOCAL_IMAGE",
             "dynamodb-admin": "DYNAMODB_ADMIN_IMAGE",
+            "ollama-llm": "OLLAMA_IMAGE",
+            "ollama-embedding": "OLLAMA_IMAGE",
             "opensearch": "OPENSEARCH_IMAGE",
             "opensearch-dashboards": "OPENSEARCH_DASHBOARDS_IMAGE",
             "langfuse-postgres": "LANGFUSE_POSTGRES_IMAGE",
@@ -40,7 +44,7 @@ class ComposeInvariantTests(unittest.TestCase):
             "redisinsight": "REDISINSIGHT_IMAGE",
         }
         self.assertEqual("remote-infra-stack", model["name"])
-        self.assertEqual(16, len(expected_images))
+        self.assertEqual(18, len(expected_images))
         self.assertEqual(set(expected_images), set(model["services"]))
         for name, expected_image in expected_images.items():
             self.assertEqual(
@@ -80,7 +84,8 @@ class ComposeInvariantTests(unittest.TestCase):
 
     def assert_stateful_services_use_named_volumes_and_enabled_healthchecks(self, model):
         stateful = {
-            "app-postgres", "app-redis", "chroma", "dynamodb-local", "opensearch",
+            "app-postgres", "app-redis", "chroma", "dynamodb-local", "ollama-llm",
+            "ollama-embedding", "opensearch",
             "langfuse-postgres", "langfuse-redis", "clickhouse", "minio",
             "pgadmin", "redisinsight",
         }
@@ -135,6 +140,8 @@ class ComposeInvariantTests(unittest.TestCase):
             "chroma-admin": "vector",
             "dynamodb-local": "dynamodb",
             "dynamodb-admin": "dynamodb",
+            "ollama-llm": "inference",
+            "ollama-embedding": "inference",
             "opensearch": "search",
             "opensearch-dashboards": "search",
             "langfuse-postgres": "observability",
@@ -153,6 +160,8 @@ class ComposeInvariantTests(unittest.TestCase):
             "chroma-admin": {"chroma"},
             "dynamodb-local": set(),
             "dynamodb-admin": {"dynamodb-local"},
+            "ollama-llm": set(),
+            "ollama-embedding": set(),
             "opensearch": set(),
             "opensearch-dashboards": {"opensearch"},
             "langfuse-postgres": set(),
