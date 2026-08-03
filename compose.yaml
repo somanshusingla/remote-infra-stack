@@ -94,6 +94,7 @@ services:
       dockerfile: images/chromadb-admin/Dockerfile
       args:
         NODE_IMAGE: ${CHROMA_ADMIN_NODE_IMAGE:?set in versions.env}
+        NPM_VERSION: ${CHROMA_ADMIN_NPM_VERSION:?set in versions.env}
     restart: unless-stopped
     ports:
       - "127.0.0.1:18001:3001"

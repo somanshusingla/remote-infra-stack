@@ -47,6 +47,7 @@ class CoreVectorComposeTests(unittest.TestCase):
             "docker.io/library/node:20.19.2-bookworm-slim@sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661",
             admin["build"]["args"]["NODE_IMAGE"],
         )
+        self.assertEqual("10.8.3", admin["build"]["args"]["NPM_VERSION"])
         dockerfile = Path(admin["build"]["dockerfile"])
         if not dockerfile.is_absolute():
             dockerfile = Path(admin["build"]["context"]) / dockerfile
@@ -69,6 +70,13 @@ class CoreVectorComposeTests(unittest.TestCase):
     def test_vector_chroma_admin_build_contract_rejects_wrong_node_image(self):
         admin = deepcopy(render_compose("vector")["services"]["chroma-admin"])
         admin["build"]["args"]["NODE_IMAGE"] = "docker.io/library/node:wrong"
+
+        with self.assertRaises(AssertionError):
+            self.assert_chroma_admin_build_contract(admin)
+
+    def test_vector_chroma_admin_build_contract_rejects_wrong_npm_version(self):
+        admin = deepcopy(render_compose("vector")["services"]["chroma-admin"])
+        admin["build"]["args"]["NPM_VERSION"] = "10.8.2"
 
         with self.assertRaises(AssertionError):
             self.assert_chroma_admin_build_contract(admin)

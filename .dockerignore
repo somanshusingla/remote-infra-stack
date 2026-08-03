@@ -2,6 +2,7 @@
 !images/
 !images/chromadb-admin/
 !images/chromadb-admin/Dockerfile
+!images/chromadb-admin/install-dependencies.sh
 !vendor/
 !vendor/chromadb-admin/
 !vendor/chromadb-admin/**

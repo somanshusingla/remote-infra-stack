@@ -266,7 +266,8 @@ tar --extract --gzip --file "$staged_archive" --directory "$extracted" \
 for required in \
   compose.yaml versions.env scripts/remote/compose.sh scripts/remote/preflight.sh \
   scripts/remote/health.sh config/ollama/bootstrap.sh \
-  images/chromadb-admin/Dockerfile .dockerignore \
+  images/chromadb-admin/Dockerfile images/chromadb-admin/install-dependencies.sh \
+  .dockerignore \
   vendor/chromadb-admin/package.json vendor/chromadb-admin/package-lock.json \
   vendor/chromadb-admin/LICENSE.txt vendor/chromadb-admin/UPSTREAM.md \
   config/opensearch/opensearch.yml config/opensearch/docker-entrypoint.sh; do

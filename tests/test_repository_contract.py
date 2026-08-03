@@ -8,6 +8,39 @@ from tests.helpers import read_env, repo_path, validate_fixture_contracts
 
 
 class RepositoryContractTests(unittest.TestCase):
+    def assert_chroma_admin_build_wiring(self, dockerfile, dockerignore):
+        logical_dockerfile = re.sub(r"\\\r?\n[ \t]*", " ", dockerfile)
+        instructions = {
+            re.sub(r"[ \t]+", " ", line.strip())
+            for line in logical_dockerfile.splitlines()
+            if line.strip()
+        }
+        self.assertIn("ARG NPM_VERSION", instructions)
+        self.assertIn(
+            'RUN npm install --global "npm@${NPM_VERSION}" '
+            '&& test "$(npm --version)" = "${NPM_VERSION}"',
+            instructions,
+        )
+        self.assertIn(
+            "COPY --chmod=0755 images/chromadb-admin/install-dependencies.sh "
+            "/usr/local/bin/chroma-admin-install-dependencies",
+            instructions,
+        )
+        self.assertIn(
+            'RUN EXPECTED_NPM_VERSION="${NPM_VERSION}" '
+            "/usr/local/bin/chroma-admin-install-dependencies",
+            instructions,
+        )
+        allowlist = [
+            line.strip()
+            for line in dockerignore.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(
+            1,
+            allowlist.count("!images/chromadb-admin/install-dependencies.sh"),
+        )
+
     def test_required_root_files_exist(self):
         for name in ("compose.yaml", "versions.env", ".env.example", "remote.env.example"):
             self.assertTrue(repo_path(name).is_file(), name)
@@ -46,10 +79,63 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertEqual("^2.0.1", package["dependencies"]["chromadb"])
         self.assertTrue(repo_path("vendor/chromadb-admin/package-lock.json").is_file())
         self.assertTrue(repo_path("vendor/chromadb-admin/LICENSE.txt").is_file())
-        self.assertIn("npm ci", dockerfile)
         self.assertIn("USER node", dockerfile)
         self.assertIn("EXPOSE 3001", dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^FROM\s+node:")
+
+    def test_chroma_admin_docker_build_wiring_is_exact(self):
+        self.assert_chroma_admin_build_wiring(
+            repo_path("images/chromadb-admin/Dockerfile").read_text(encoding="utf-8"),
+            repo_path(".dockerignore").read_text(encoding="utf-8"),
+        )
+
+    def test_chroma_admin_build_wiring_rejects_dockerfile_and_allowlist_mutations(self):
+        dockerfile = repo_path("images/chromadb-admin/Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        dockerignore = repo_path(".dockerignore").read_text(encoding="utf-8")
+        mutations = (
+            ("missing npm arg", dockerfile.replace("ARG NPM_VERSION\n", ""), dockerignore),
+            (
+                "unpinned global npm",
+                dockerfile.replace('"npm@${NPM_VERSION}"', '"npm@latest"'),
+                dockerignore,
+            ),
+            (
+                "missing installed-version assertion",
+                dockerfile.replace(
+                    '&& test "$(npm --version)" = "${NPM_VERSION}"',
+                    "&& true",
+                ),
+                dockerignore,
+            ),
+            (
+                "copy without executable mode",
+                dockerfile.replace("COPY --chmod=0755", "COPY"),
+                dockerignore,
+            ),
+            (
+                "helper invocation without expected version",
+                dockerfile.replace(
+                    'EXPECTED_NPM_VERSION="${NPM_VERSION}"',
+                    'EXPECTED_NPM_VERSION="10.8.3"',
+                ),
+                dockerignore,
+            ),
+            (
+                "missing helper allowlist",
+                dockerfile,
+                dockerignore.replace(
+                    "!images/chromadb-admin/install-dependencies.sh\n", ""
+                ),
+            ),
+        )
+        for name, mutated_dockerfile, mutated_dockerignore in mutations:
+            with self.subTest(mutation=name):
+                with self.assertRaises(AssertionError):
+                    self.assert_chroma_admin_build_wiring(
+                        mutated_dockerfile, mutated_dockerignore
+                    )
 
     def test_secret_files_are_ignored(self):
         ignored = repo_path(".gitignore").read_text(encoding="utf-8")
