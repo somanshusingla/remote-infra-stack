@@ -14,6 +14,8 @@
 
 **Existing-worktree constraint:** Preserve the user's uncommitted changes in `config/ollama/bootstrap.sh` and `tests/test_ollama_bootstrap.py`. No task may restore, rewrite, stage, or commit those files unless a later user instruction explicitly expands scope.
 
+**Execution corrections from plan preflight:** Do not add new tests that merely grep human documentation for exact prose; behavior-test the ignore and operator interfaces, manually review the published commands/endpoints, and update legacy documentation expectations only when required to keep the pre-existing suite coherent. Because the primary worktree intentionally contains the two user-owned edits, Task 8 must deploy `HEAD` from a temporary detached clean worktree with copied ignored configuration rather than stashing, staging, committing, or otherwise disturbing those edits.
+
 ---
 
 ## Task 1: Pin and validate the GPU bootstrap input
@@ -463,16 +465,14 @@ git commit -m "feat: gate inference releases on GPU use"
 - Old CPU model volumes are preserved but not advertised as fallback.
 - Both tunnel processes keep inference at `127.0.0.1:11440` and `127.0.0.1:11441`.
 
-### Step 1: Write failing ignore and documentation assertions
+### Step 1: Write the failing ignore behavior assertion
 
-Add tests requiring:
+Add a repository-contract test that invokes `git check-ignore` against temporary repository-root names and requires:
 
-- `.gitignore` matches `remote.*.env` while still matching `.env` and `remote.env`.
-- README and operations docs include `remote.data.env`, `remote.gpu.env`, `$env:STACK_REMOTE_ENV = (Resolve-Path ...)`, Bash `STACK_REMOTE_ENV="$(realpath ...)"`, `bootstrap.ps1 -Gpu`, and `bootstrap.sh --gpu`.
-- data deploy examples include exactly `core vector dynamodb search observability tools`.
-- GPU deploy examples include exactly `inference`.
-- no canonical table calls inference CPU-based.
-- recovery says update only `REMOTE_HOST`, reopen the tunnel, and run the check without redeployment.
+- `.gitignore` matches `remote.data.env`, `remote.gpu.env`, `.env`, and `remote.env`.
+- it does not ignore `remote.env.example` or an unrelated tracked-style name.
+
+Do not add exact-prose assertions for README or operations documentation. Human prose is reviewed manually. Update pre-existing documentation test expectations only where the approved split-host commands make their old expectation false.
 
 ### Step 2: Run focused tests and confirm RED
 
@@ -482,7 +482,7 @@ Run:
 python -m unittest tests.test_repository_contract tests.test_documentation -v
 ```
 
-Expected: ignore and split-host documentation assertions fail.
+Expected: the new ignore behavior assertion fails because the two target names are not yet ignored.
 
 ### Step 3: Update ignore rules and operator docs
 
@@ -500,7 +500,9 @@ Use `remote.*.env` as the narrow ignore rule. Document:
 
 Do not commit either real target file or any complete public IP.
 
-### Step 4: Run documentation and tunnel contracts
+### Step 4: Manually review documentation, then run existing contracts
+
+Read both rendered Markdown files end to end and verify the approved target names, shell commands, profile split, endpoints, cutover order, and Spot recovery instructions. This manual review is the acceptance for human prose; record it in the task report.
 
 Run:
 
@@ -586,7 +588,13 @@ Treat addresses as ephemeral observations. Discover the current values before ev
 
 Do not rotate the existing data VM key and do not disable project-wide keys as part of this task.
 
-### Step 2: Create the two ignored target files safely
+### Step 2: Create a temporary detached clean deployment worktree
+
+Create a second, temporary worktree detached at the reviewed feature `HEAD`. Verify it is clean and points at the exact commit that passed Task 7. Copy the existing ignored `.env` into that worktree without displaying it. Perform all Task 8 operator commands from the detached worktree. Remove the temporary worktree only after smoke evidence is committed from the primary feature worktree.
+
+This is an operational cleanliness boundary, not a new development branch. Never stash or clean the primary worktree.
+
+### Step 3: Create the two ignored target files safely
 
 Copy `remote.env.example` into `remote.data.env` and `remote.gpu.env`; set only the target-specific host/user/port/key/root values. Preserve the existing local port map. Verify:
 
@@ -597,7 +605,7 @@ git status --short
 
 Expected: both files are ignored and absent from Git status.
 
-### Step 3: Check and bootstrap the GPU host
+### Step 4: Check and bootstrap the GPU host
 
 Run:
 
@@ -610,7 +618,7 @@ $env:STACK_REMOTE_ENV = (Resolve-Path .\remote.gpu.env)
 
 Reconnect after group/runtime changes. On the host verify Docker, Compose, `nvidia-smi`, the exact T4 name, toolkit configuration, and the pinned CUDA container test. Confirm ports 11440/11441 are not publicly listening.
 
-### Step 4: Deploy only inference and wait for atomic acceptance
+### Step 5: Deploy only inference and wait for atomic acceptance
 
 Run:
 
@@ -632,13 +640,13 @@ The first pull may approach the 90-minute health window. Report progress from sa
 
 Redeploy the same commit once and confirm the second deployment reuses model volumes without downloading fresh model data.
 
-### Step 5: Verify the local inference tunnel
+### Step 6: Verify the local inference tunnel
 
 Start `scripts/tunnel.ps1 inference` as a hidden background process, wait for both local ports, issue one bounded chat request and one embedding request to the unchanged localhost endpoints, then stop only that local SSH process. Do not print response bodies or vectors.
 
-### Step 6: Cut inference off the data host
+### Step 7: Cut inference off the data host
 
-Only after Steps 4 and 5 pass:
+Only after Steps 5 and 6 pass:
 
 ```powershell
 $env:STACK_REMOTE_ENV = (Resolve-Path .\remote.data.env)
@@ -648,7 +656,7 @@ $env:STACK_REMOTE_ENV = (Resolve-Path .\remote.data.env)
 
 Verify no Ollama container is running on the data VM, both old named volumes still exist, and every one of the 16 non-inference containers is running and healthy. Probe every loopback endpoint through the data tunnel without printing secrets.
 
-### Step 7: Exercise actual Spot stop/start recovery
+### Step 8: Exercise actual Spot stop/start recovery
 
 1. Capture the active GPU release identifier, volume names/sizes, model identities, and current ephemeral address in memory only.
 2. Stop the GCP instance and wait until `TERMINATED`.
@@ -659,7 +667,11 @@ Verify no Ollama container is running on the data VM, both old named volumes sti
 
 If Spot capacity prevents restart, retry with bounded backoff and record the exact cloud condition. Do not change machine type, disk, accelerator, zone, Spot status, or create a replacement VM without new user authority.
 
-### Step 8: Record sanitized GCP evidence
+### Step 9: Restore both split-host tunnels for the operator
+
+After recovery acceptance, start one hidden long-lived data-host tunnel for `core vector dynamodb search observability tools` and one hidden long-lived GPU-host tunnel for `inference`. Verify every local endpoint is bound by exactly the intended SSH process and that both SSH targets use the dedicated identity. Leave both tunnel processes running for the returning operator.
+
+### Step 10: Record sanitized GCP evidence
 
 Create `docs/verification/split-gpu-inference-gcp-smoke.md` containing:
 
@@ -677,7 +689,7 @@ Create `docs/verification/split-gpu-inference-gcp-smoke.md` containing:
 
 Never include secrets, complete IP addresses, SSH public-key material, model response text, embedding vectors, or unredacted environment files.
 
-### Step 9: Commit evidence and run final verification
+### Step 11: Commit evidence and run final verification
 
 ```powershell
 git add docs/verification/split-gpu-inference-gcp-smoke.md
