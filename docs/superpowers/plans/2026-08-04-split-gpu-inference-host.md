@@ -882,12 +882,212 @@ Obtain an independent Task 13 review before Task 8 recreates its detached checko
 
 ---
 
+## Task 14: Capture the accepted `1/1` throughput baseline
+
+**Approved design:** `docs/superpowers/specs/2026-08-04-balanced-t4-throughput-design.md`
+
+**Files (ignored operational artifacts only):**
+
+- Create: `.superpowers/sdd/2026-08-04-split-gpu-inference-host/throughput-benchmark.py`
+- Create: `.superpowers/sdd/2026-08-04-split-gpu-inference-host/throughput-baseline.json`
+- Create: `.superpowers/sdd/2026-08-04-split-gpu-inference-host/task-14-report.md`
+
+**Contract:** Measure the currently accepted GPU release before any throughput code or
+active `.env` change. The harness must be deterministic, standard-library only, and
+output-silent for model data. It may read tracked model pins and ignored target details
+into memory, but output/artifacts may contain only phase names, request counts, HTTP/error
+counts, timing/token aggregates, boolean GPU/offload checks, and MiB totals. It must never
+record model names, response text, embeddings, public targets, identity paths, or secrets.
+
+### Step 1: Verify the live baseline and establish a temporary tunnel
+
+Prove the active release is the accepted `aca6f53` lineage, both containers are healthy,
+their exact environment is parallel `1/1`, loaded models `1/1`, context `8192`, and
+keep-alive `5m`, with loopback binds and NVIDIA requests. Rediscover the GPU VM address
+and change only ignored `REMOTE_HOST` if necessary. Start an inference-only tunnel and
+verify both local ports without disturbing the data tunnel or remote containers.
+
+### Step 2: Build and self-test the ignored benchmark harness
+
+The Python harness accepts a phase (`baseline` or `tuned`), local endpoint ports, tracked
+versions file, round count, and an optional remote sampling command assembled by the
+operator. It performs:
+
+- one output-silent warm-up per endpoint with `keep_alive: 30m`;
+- five warmed serial requests per endpoint for latency reference;
+- five LLM rounds of two concurrent non-streaming requests capped at 32 tokens;
+- five embedding rounds of four concurrent single-input requests;
+- 120-second per-request timeouts and strict JSON/status/shape validation;
+- median and p95 latency, median LLM aggregate evaluated tokens/second, and median
+  embedding requests/second;
+- optional concurrent remote GPU-memory sampling that reports only peak aggregate MiB.
+
+Unit-test parsing/statistics/output redaction inside the ignored artifact before using it.
+
+### Step 3: Run and record the baseline
+
+Run the harness through the accepted tunnel. Independently verify both models are fully
+GPU-backed, no container restarts/OOM/Xid/nonzero exits occurred, and endpoint health
+still passes. Store sanitized JSON and a concise ignored report. Stop only the temporary
+tunnel if it is separate from an operator handoff tunnel. Do not commit a baseline-only
+artifact and do not change Compose or `.env`.
+
+---
+
+## Task 15: Implement the balanced Compose settings
+
+**Files:**
+
+- Modify: `compose.yaml`
+- Modify: `.env.example`
+- Modify: `docs/operations.md`
+- Modify: `tests/test_compose_inference.py`
+- Modify: `tests/test_documentation.py`
+
+**Contract:** Set LLM parallelism to exactly `2`, embedding parallelism to exactly `4`,
+and the documented/default keep-alive to exactly `30m`. Keep context `8192`, loaded models
+`1`, service-specific memory caps, GPU reservations, profiles, ports, volumes, health,
+and every non-inference service unchanged. Parallelism remains a committed literal per
+service, not a free-form environment override.
+
+### Step 1: Add failing exact-value contracts
+
+Update Compose tests to assert each inference service's complete environment map, with
+LLM parallel `2`, embedding parallel `4`, common keep-alive `30m`, context `8192`, and
+loaded models `1`. Add negative invariants proving the parallel values are not sourced
+from `.env` substitution and no other service receives these settings. Update docs tests
+to require the balanced values and their T4/concurrency explanation.
+
+Run the focused tests and capture RED because production still renders `1/1` and `5m`.
+
+### Step 2: Make the minimal Compose and documentation change
+
+Change only the two inference environment maps, `.env.example` keep-alive, and the
+operator configuration/concurrency explanation. Cite Ollama's documented
+parallelism-times-context memory behavior and warn that these values are accepted only
+for the measured T4 layout.
+
+### Step 3: Verify and commit
+
+Render inference and every non-inference profile with a redacted temporary `.env`. Run
+the focused Compose/documentation/repository suites, `git diff --check`, and confirm only
+the five authorized Task 15 files plus the two preserved user edits were present before
+commit.
+
+```powershell
+git add compose.yaml .env.example docs/operations.md tests/test_compose_inference.py tests/test_documentation.py
+git commit -m "feat: balance T4 inference concurrency"
+```
+
+Obtain an independent Task 15 review before any live deployment.
+
+---
+
+## Task 16: Verify the balanced tree locally
+
+**Files:**
+
+- Modify: `docs/verification/split-gpu-inference-local.md`
+
+Run the complete accepted local matrix on the reviewed Task 15 commit:
+
+- all shell syntax checks;
+- inference plus all non-inference Compose renders with no secret output;
+- focused Compose/documentation/repository tests;
+- WSL/Git Bash operator, remote-runtime, lifecycle, and tunnel parity suites;
+- exact unrestricted Windows aggregate with the canonical local ports temporarily free.
+
+If current operator tunnels occupy canonical ports, stop only their captured local
+launcher/SSH processes for the aggregate, then relaunch and revalidate them. Do not change
+remote services. Update the local evidence with the exact commit/counts and balanced
+render contract, commit only that document, and obtain independent review.
+
+```powershell
+git add docs/verification/split-gpu-inference-local.md
+git commit -m "test: verify balanced T4 contracts locally"
+```
+
+---
+
+## Task 17: Deploy, benchmark, and accept or revert balanced throughput
+
+**Files:**
+
+- Local ignored: `.env`, `remote.gpu.env`, Task 14 harness/baseline artifacts
+- Create: `docs/verification/balanced-t4-throughput-gcp.md`
+
+### Step 1: Prepare a clean reviewed deployment checkout
+
+Refresh the detached deployment worktree to the reviewed Task 16 `HEAD`. Copy ignored
+configuration without displaying it. Update exactly one existing `.env` assignment,
+`OLLAMA_KEEP_ALIVE`, from `5m` to `30m`; verify no other byte-level assignment changed.
+Keep both remote target files ignored and rediscover current ephemeral addresses.
+
+### Step 2: Deploy atomically to the GPU host
+
+Deploy only `inference`. Require the complete cold-600/warm-120/embed-120 health gate,
+both containers healthy, exact `2/4`, `1/1`, `8192`, and `30m` environment, NVIDIA device
+requests, loopback binds, fully GPU-backed models, positive host compute memory, and no
+OOM/Xid/nonzero exit. The data host remains at 16 non-inference services with CPU Ollama
+stopped.
+
+If deployment health fails, prove the prior release remains/restores `current` and stop.
+
+### Step 3: Run the tuned benchmark and compare
+
+Start an inference tunnel and run the unchanged Task 14 harness with phase `tuned`. Verify
+its schema/configuration fingerprint matches the baseline artifact. Compute and record:
+
+- tuned/baseline median LLM aggregate evaluated tokens/second ratio;
+- tuned/baseline median embedding requests/second ratio;
+- tuned p95 latency divided by warmed serial baseline p95 for each endpoint;
+- errors/timeouts/statuses, peak compute VRAM, GPU process count, full-GPU booleans,
+  container restarts, OOM/Xid/nonzero-exit counts.
+
+Accept only all seven criteria in the approved balanced design. After the primary
+decision, leave both endpoints idle for more than five minutes, prove models remain
+resident with the exact `30m` environment, and repeat output-silent bounded calls. This
+idle observation is not included in throughput ratios.
+
+### Step 4: Automatic rollback on any failed criterion
+
+If any post-deployment criterion fails:
+
+1. preserve sanitized failure evidence;
+2. create a normal revert commit that restores exact `1/1` and `5m` contracts/docs;
+3. independently review that revert;
+4. deploy the revert commit atomically to the same GPU host;
+5. re-prove the baseline health/endpoints and leave the reverted release current.
+
+Do not alter models, volumes, context, memory caps, GPU/VM/cloud settings, or data-host
+profiles to rescue a failed benchmark.
+
+### Step 5: Record evidence, restore tunnels, and commit
+
+Create sanitized throughput evidence containing settings, methodology, aggregate metrics,
+ratios, safety checks, idle-residency result, accepted/reverted outcome, and tested commit.
+Exclude complete public addresses, target/env contents, key material, model identities,
+response text, and vectors. Leave root-owned foreground data and GPU tunnel sessions
+running and independently verify all 15 local ports plus stable endpoint calls.
+
+```powershell
+git add docs/verification/balanced-t4-throughput-gcp.md
+git commit -m "test: verify balanced T4 throughput on GCP"
+```
+
+Obtain independent review of the live evidence and final state.
+
+---
+
 ## Final review and handoff
 
-After Task 8:
+After Task 17:
 
 1. Run a fresh final specification review against the approved design and every success criterion.
 2. Run a fresh quality/security review over the full diff from `87a6003` through `HEAD`.
 3. Resolve all critical, important, and in-scope minor findings through the same test-first task workflow.
 4. Invoke `verification-before-completion` and rerun every required command from a clean committed task state.
-5. Invoke `finishing-a-development-branch`; present the branch/worktree status and integration choices without merging, pushing, deleting the worktree, or committing the user's two unrelated edits unless explicitly authorized.
+5. Invoke `finishing-a-development-branch`; preserve the user's two unrelated edits. The
+   operator has explicitly authorized integration to GitHub `master` after all work, so
+   update local `master` without staging those edits and push the final reviewed commit to
+   `origin/master`. Do not delete a worktree while it is needed by live tunnel sessions.
