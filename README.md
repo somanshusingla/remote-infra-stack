@@ -101,15 +101,25 @@ STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh
 STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/deploy.sh inference
 ```
 
-After GPU acceptance, use two terminals simultaneously:
+First open the GPU acceptance tunnel in one terminal:
 
 ```bash
-STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb
 STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/tunnel.sh inference
 ```
 
-Keep both tunnel commands running while local clients use the endpoints. Each occupies
-its terminal; open another terminal for application and lifecycle commands.
+In another terminal, run both Ollama calls shown in [Configure local
+applications](#configure-local-applications). If either fails, leave legacy CPU
+inference running, diagnose or retry the GPU target, and reopen its data tunnel if it
+was closed. Do not cut over. Only after both calls succeed, stop the legacy CPU service
+and open the data tunnel:
+
+```bash
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop inference
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb
+```
+
+Keep both tunnel commands running while local clients use the endpoints. The preserved
+CPU model volumes are not a supported fallback.
 
 ### Windows PowerShell
 
@@ -133,19 +143,27 @@ $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 .\scripts\deploy.ps1 inference
 ```
 
-After GPU acceptance, start these in two PowerShell windows:
+First open the GPU acceptance tunnel in one PowerShell window:
 
 ```powershell
-$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
-.\scripts\tunnel.ps1 core vector dynamodb
-
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 .\scripts\tunnel.ps1 inference
 ```
 
-Keep both PowerShell windows open for the tunnels and use another window for local
-applications and lifecycle commands. `Ctrl+C` closes a tunnel without stopping remote
-services.
+In another window, run both PowerShell Ollama calls shown in [Configure local
+applications](#configure-local-applications). If either fails, leave legacy CPU
+inference running, diagnose or retry the GPU target, and reopen its data tunnel if it
+was closed. Do not cut over. Only after both calls succeed, stop the legacy CPU service
+and open the data tunnel:
+
+```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\stack.ps1 stop inference
+.\scripts\tunnel.ps1 core vector dynamodb
+```
+
+Keep both PowerShell tunnel windows open for local clients. The preserved CPU model
+volumes are not a supported fallback.
 
 ### Configuration files
 
@@ -372,10 +390,15 @@ The named volumes are intentionally disposable and this repository provides no b
 export, restore, or cross-VM migration script. Deleting the VM or its disk deletes the
 data; that is an accepted boundary for this personal-development stack.
 
-For GPU Spot recovery, stop/start or replace only the GPU VM in the cloud provider.
-When its ephemeral IP changes, edit only `REMOTE_HOST` in `remote.gpu.env`; Docker
-automatically restarts the containers and their named model volumes persist. Restart
-the GPU tunnel using its absolute `STACK_REMOTE_ENV` path. Do not redeploy unchanged
-code just to refresh an address, and do not disturb the data host. Treat the daily
-Backup and DR plan as recovery media for the VM or disk, not an application-level backup
-guarantee; use service-specific exports for important data.
+For ordinary GPU Spot recovery, stop and start only the existing GPU VM in the cloud
+provider. When its ephemeral IP changes, edit only `REMOTE_HOST` in `remote.gpu.env`,
+reopen the GPU tunnel using its absolute `STACK_REMOTE_ENV` path, and rerun both Ollama
+endpoint checks without deploying again. Docker automatically restarts containers and
+the existing VM's persistent named volumes retain the model caches. Do not disturb the
+data host.
+
+Replacement is separate recovery work: restore or reattach the recovery media that
+contains the Docker volumes before treating a replacement VM as recovered. Do not
+assume a replacement retains previous model caches. Treat the daily Backup and DR plan
+as recovery media for the VM or disk, not an application-level backup guarantee; use
+service-specific exports for important data.

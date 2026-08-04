@@ -121,34 +121,15 @@ first GPU `inference` deployment also downloads and verifies `gemma4:e4b` and
 failure. If it is interrupted, rerun the same GPU deploy command: each Ollama container
 resumes or reuses partial layers in its persistent named volume.
 
-Accept the GPU host only after its deploy succeeds and both Ollama API calls succeed
-through its tunnel. If acceptance fails, leave any existing CPU inference on the data
-host running, investigate or retry the GPU deployment, and do not cut over. After GPU
-acceptance, stop legacy CPU inference on the data host without removing its old model
-volumes:
-
-```bash
-STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop inference
-```
-
-Those preserved CPU volumes are not a supported fallback path; recovery continues on
-the accepted GPU target.
-
-### 5. Start the SSH tunnel
-
-```bash
-STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb
-```
-
-In a second terminal, run:
+### 5. Open the GPU acceptance tunnel
 
 ```bash
 STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/tunnel.sh inference
 ```
 
-Keep both terminals open. The data tunnel forwards only data profiles; the GPU tunnel
-forwards only `inference`, retaining `127.0.0.1:11440` and `127.0.0.1:11441`. `Ctrl+C`
-closes a tunnel but does not stop remote services.
+Keep this terminal open while running the two GPU acceptance calls in the next step.
+The GPU tunnel forwards only `inference`, retaining `127.0.0.1:11440` and
+`127.0.0.1:11441`.
 
 ### 6. Configure and use local applications
 
@@ -192,6 +173,20 @@ curl http://127.0.0.1:11440/api/chat \
 curl http://127.0.0.1:11441/api/embed \
   -d '{"model":"embeddinggemma:300m","input":"hello from the remote stack"}'
 ```
+
+Only after both calls succeed is the GPU host accepted. If either call fails, leave the
+legacy data-host CPU inference running, diagnose or retry the GPU target, and reopen
+its data tunnel if it was closed. Do not cut over. After acceptance, stop the legacy
+CPU service without removing its model volumes, then open the data tunnel in a second
+terminal:
+
+```bash
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop inference
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb
+```
+
+The preserved CPU volumes are not a supported fallback path. Keep both tunnel terminals
+open while using local clients; `Ctrl+C` closes a tunnel but does not stop remote services.
 
 Use the generated values from `.env` for application database passwords and the
 OpenSearch `admin` login. Create Langfuse project API keys in the Langfuse UI after its
@@ -290,34 +285,18 @@ $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 Deployment uploads the clean committed Git release and `.env` separately, starts the
 selected profiles, waits for health checks, and only then activates the release. On
 first GPU use, wait for both model downloads. If interrupted, run the same GPU deploy
-command again; the named Ollama caches preserve reusable layers. Do not stop a legacy
-data-host CPU inference until GPU acceptance succeeds. If acceptance fails, leave it
-running, diagnose or retry the GPU target, and do not cut over; then run:
+command again; the named Ollama caches preserve reusable layers.
 
-```powershell
-$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
-.\scripts\stack.ps1 stop inference
-```
-
-Keep the old CPU model volumes, but do not use them as a fallback.
-
-### 5. Start the SSH tunnel
-
-```powershell
-$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
-.\scripts\tunnel.ps1 core vector dynamodb
-```
-
-In a second PowerShell window, run:
+### 5. Open the GPU acceptance tunnel
 
 ```powershell
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 .\scripts\tunnel.ps1 inference
 ```
 
-Keep both PowerShell windows open. The data tunnel forwards only data profiles; the GPU
-tunnel forwards only `inference`, retaining `127.0.0.1:11440` and
-`127.0.0.1:11441`. `Ctrl+C` closes a tunnel but does not stop remote services.
+Keep this PowerShell window open while running the two GPU acceptance calls in the next
+step. The GPU tunnel forwards only `inference`, retaining `127.0.0.1:11440` and
+`127.0.0.1:11441`.
 
 ### 6. Configure and use local applications
 
@@ -349,6 +328,22 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11440/api/chat' -ContentTy
 $embed = @{ model = 'embeddinggemma:300m'; input = 'hello from the remote stack' } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11441/api/embed' -ContentType 'application/json' -Body $embed
 ```
+
+Only after both calls succeed is the GPU host accepted. If either call fails, leave the
+legacy data-host CPU inference running, diagnose or retry the GPU target, and reopen
+its data tunnel if it was closed. Do not cut over. After acceptance, stop the legacy
+CPU service without removing its model volumes, then open the data tunnel in a second
+PowerShell window:
+
+```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\stack.ps1 stop inference
+.\scripts\tunnel.ps1 core vector dynamodb
+```
+
+The preserved CPU volumes are not a supported fallback path. Keep both PowerShell
+windows open while using local clients; `Ctrl+C` closes a tunnel but does not stop
+remote services.
 
 Use the generated values from `.env` for application database passwords and the
 OpenSearch `admin` login. Create Langfuse project API keys in the Langfuse UI after its
@@ -448,12 +443,17 @@ data.
 
 ## GPU Spot recovery
 
-For a GPU Spot interruption, stop and start (or replace) only the GPU VM through the
+For ordinary GPU Spot recovery, stop and start only the existing GPU VM through the
 cloud provider. Its ephemeral public IP may change; update only `REMOTE_HOST` in
-`remote.gpu.env`, then start the GPU tunnel again with its absolute
-`STACK_REMOTE_ENV` path. Docker restarts containers automatically and persistent named
-volumes retain the model caches. Do not redeploy an unchanged release just to refresh
-the IP. The data host remains untouched.
+`remote.gpu.env`, reopen the GPU tunnel with its absolute `STACK_REMOTE_ENV` path, and
+rerun both Ollama endpoint checks above without deploying again. Docker restarts the
+containers and the existing VM's persistent named volumes retain model caches. The data
+host remains untouched.
+
+Replacement is different: restore or reattach the recovery media that contains the
+required Docker volumes before treating the replacement as recovered. Do not assume a
+new VM has the previous model caches, and do not claim automatic cache retention for a
+replacement.
 
 ## Safe smoke-test sequence
 
