@@ -810,6 +810,38 @@ Obtain an independent Task 11 review before recreating Task 8's detached deploym
 
 ---
 
+## Task 12: Recognize healthy held-package status records
+
+**Discovery:** Task 8's third live bootstrap retried from approved commit `7bc3d02` and failed closed before mutation. All four coherent toolkit packages report exact `dpkg-query ${Status}` value `hold ok installed` at `1.17.8-1`; `dpkg --audit` is empty and `nvidia-ctk` exists. Task 11's supposedly held fixture incorrectly emitted `install ok installed`, so the classifier rejected the vendor-held state it was designed to preserve. No runtime configuration, deployment, cutover, tunnel, or Spot action occurred.
+
+**Files:**
+
+- Modify: `scripts/remote/bootstrap-host.sh`
+- Modify: `tests/test_bootstrap.py`
+
+**Contract:** Treat a package as installed only when its exact three-part status is either `install ok installed` or `hold ok installed`. The selection token may differ across the quartet, but the error/status tokens must remain exactly `ok installed`; reject `deinstall`, `purge`, `unknown`, `reinstreq`, `config-files`, malformed, missing, or extra values. Retain exact package identity, one-record-per-query, coherent-version, real-exit-status, `nvidia-ctk`, zero-mutation failure, no-unhold, runtime configuration, and pinned CUDA exact-T4 guarantees.
+
+### Step 1: Correct the fixture and capture RED
+
+Make the coherent vendor-held fixture emit `hold ok installed` for every toolkit package and add table-driven malformed/unhealthy selection/error/status cases. Add a mixed healthy `install`/`hold` quartet to prove selection state does not trigger package mutation. Run the focused tests against current production and capture RED specifically because the real held status is rejected.
+
+### Step 2: Implement the exact healthy-status predicate
+
+Change only the installed-state predicate to accept the two complete healthy values. Do not use substring, suffix-only, or whitespace-normalizing matches. Keep every other Task 11 classifier and mutation boundary unchanged.
+
+### Step 3: Verify, commit, and review
+
+Run focused RED/GREEN, Bash syntax, the complete WSL bootstrap suite, and the unrestricted normal Windows aggregate. Commit only the two Task 12 files:
+
+```powershell
+git add scripts/remote/bootstrap-host.sh tests/test_bootstrap.py
+git commit -m "fix: recognize held NVIDIA toolkit packages"
+```
+
+Obtain an independent Task 12 review before Task 8 recreates its detached checkout and retries bootstrap from the beginning.
+
+---
+
 ## Final review and handoff
 
 After Task 8:
