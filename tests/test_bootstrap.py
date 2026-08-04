@@ -134,6 +134,7 @@ case "$name" in
     record READ "$@"
     [[ "$*" == "--query-gpu=name --format=csv,noheader" ]] || exit 96
     [[ -z "${STACK_FAKE_GPU_NAMES:-}" ]] || printf '%s\n' "$STACK_FAKE_GPU_NAMES"
+    exit "${STACK_FAKE_NVIDIA_SMI_STATUS:-0}"
     ;;
   docker)
     if [[ "${1:-}" == run ]]; then
@@ -147,6 +148,8 @@ case "$name" in
     ;;
   gpg)
     record READ "$@"
+    [[ "${STACK_FAKE_GPG_STATUS:-0}" == 0 ]] || exit "$STACK_FAKE_GPG_STATUS"
+    [[ "${STACK_FAKE_GPG_EMPTY:-0}" == 0 ]] || exit 0
     while IFS= read -r line || [[ -n "$line" ]]; do printf 'DEARMORED:%s\n' "$line"; done
     ;;
   nvidia-ctk)
@@ -253,8 +256,11 @@ esac
                 "STACK_BOOTSTRAP_TEST_LOG": log.as_posix(),
                 "STACK_FAKE_REPO_ROOT": repo_root.as_posix(),
                 "STACK_FAKE_GPU_NAMES": gpu_names or "",
+                "STACK_FAKE_NVIDIA_SMI_STATUS": "0",
                 "STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4",
                 "STACK_FAKE_DOCKER_ACTIVE": "1",
+                "STACK_FAKE_GPG_STATUS": "0",
+                "STACK_FAKE_GPG_EMPTY": "0",
                 "STACK_FAKE_COMMAND_DIR": shim_directory.as_posix(),
             })
             env.update(extra_env or {})
@@ -399,6 +405,22 @@ esac
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
 
+    def test_cuda_image_rejects_leading_dash_option_injection_before_host_checks(self):
+        injected_image = "-v/tmp:/host@sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                Path(directory),
+                "--install",
+                arguments=("--gpu", "--cuda-image", injected_image),
+                gpu_names="NVIDIA T4",
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("must not begin with '-'", result.stderr)
+        self.assertEqual([], invocations)
+        self.assertNotIn("apt-get", result.stdout)
+
     def test_gpu_options_reject_duplicates_missing_values_and_unknowns(self):
         invalid_arguments = (
             ("--gpu", "--gpu", "--cuda-image", self.cuda_image),
@@ -441,6 +463,25 @@ esac
         )
         self.assertNotIn("apt-get", result.stdout)
         self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
+
+    def test_gpu_rejects_a_failing_driver_query_even_when_it_prints_t4(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            self.create_repository(repo, "resolute")
+
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={"STACK_FAKE_NVIDIA_SMI_STATUS": "19"},
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("working NVIDIA driver", result.stderr)
+        self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
+        self.assertNotIn("apt-get", result.stdout)
 
     def test_gpu_inventory_must_be_exactly_one_t4_before_apt_changes(self):
         invalid_inventories = ("", "NVIDIA T4\nNVIDIA T4", "NVIDIA L4")
@@ -597,6 +638,53 @@ esac
             "MUTATE tee /etc/apt/sources.list.d/nvidia-container-toolkit.list",
             invocations,
         )
+
+    def test_invalid_nvidia_signing_key_fails_before_host_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={
+                    "STACK_BOOTSTRAP_DRY_RUN": "0",
+                    "STACK_FAKE_DAEMON_JSON": (root / "daemon.json").as_posix(),
+                    "STACK_FAKE_GPG_STATUS": "23",
+                },
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("signing key", result.stderr)
+        self.assertIn("READ gpg --dearmor", invocations)
+        self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
+
+    def test_empty_dearmored_nvidia_key_fails_before_host_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={
+                    "STACK_BOOTSTRAP_DRY_RUN": "0",
+                    "STACK_FAKE_DAEMON_JSON": (root / "daemon.json").as_posix(),
+                    "STACK_FAKE_GPG_EMPTY": "1",
+                },
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("empty keyring", result.stderr)
+        self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
 
     def test_wrong_container_gpu_inventory_is_a_hard_failure(self):
         with tempfile.TemporaryDirectory() as directory:

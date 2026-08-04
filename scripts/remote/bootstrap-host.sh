@@ -44,6 +44,7 @@ done
 (( gpu_mode == 0 || cuda_image_seen == 1 )) || die "--gpu requires --cuda-image IMAGE"
 (( cuda_image_seen == 0 || gpu_mode == 1 )) || die "--cuda-image requires --gpu"
 if (( cuda_image_seen == 1 )); then
+  [[ "$cuda_image" != -* ]] || die "CUDA image must not begin with '-'"
   [[ "$cuda_image" != *:latest* &&
      "$cuda_image" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] ||
     die "CUDA image must be a single non-latest digest-pinned reference"
@@ -71,7 +72,15 @@ sudo -n true >/dev/null 2>&1 || die "passwordless sudo is required; configure su
 if (( gpu_mode == 1 )); then
   command -v nvidia-smi >/dev/null 2>&1 ||
     die "GPU mode requires the NVIDIA driver and nvidia-smi from the Deep Learning VM image"
-  mapfile -t gpu_names < <(nvidia-smi --query-gpu=name --format=csv,noheader)
+  command -v mktemp >/dev/null 2>&1 || die "GPU mode requires mktemp"
+  nvidia_smi_output_temp=$(mktemp) || die "could not create host GPU validation temporary file"
+  trap 'rm -f -- "$nvidia_smi_output_temp"' EXIT
+  if ! nvidia-smi --query-gpu=name --format=csv,noheader >"$nvidia_smi_output_temp"; then
+    die "GPU mode requires a working NVIDIA driver from the Deep Learning VM image"
+  fi
+  mapfile -t gpu_names <"$nvidia_smi_output_temp"
+  rm -f -- "$nvidia_smi_output_temp"
+  trap - EXIT
   [[ ${#gpu_names[@]} -eq 1 && ${gpu_names[0]} == "NVIDIA T4" ]] ||
     die "GPU mode requires exactly one NVIDIA T4"
 fi
@@ -120,9 +129,22 @@ if (( gpu_mode == 1 )); then
   nvidia_signed_repository_list=${nvidia_signed_repository_list%$'\n'}
   [[ "$nvidia_signed_repository_list" == *"deb [signed-by=$nvidia_keyring_path] https://"* ]] ||
     die "NVIDIA container toolkit stable repository has no supported deb entry"
+  command -v gpg >/dev/null 2>&1 ||
+    die "GPU mode requires gpg to validate the NVIDIA container toolkit signing key"
+  nvidia_keyring_temp=$(mktemp) || die "could not create NVIDIA keyring temporary file"
+  trap 'rm -f -- "$nvidia_keyring_temp"' EXIT
+  if ! printf '%s\n' "$nvidia_gpg_key" | gpg --dearmor >"$nvidia_keyring_temp"; then
+    die "NVIDIA container toolkit signing key validation failed"
+  fi
+  [[ -s "$nvidia_keyring_temp" ]] ||
+    die "NVIDIA container toolkit signing key validation produced an empty keyring"
 fi
 
 if [[ "$mode" == --check ]]; then
+  if (( gpu_mode == 1 )); then
+    rm -f -- "$nvidia_keyring_temp"
+    trap - EXIT
+  fi
   printf 'Host supports Docker bootstrap: Ubuntu %s (%s), amd64.\n' "${VERSION_ID:-unknown}" "$codename"
   exit 0
 fi
@@ -233,11 +255,6 @@ if (( gpu_mode == 1 )); then
     printf '+ curl --fail --silent --show-error --location %q | gpg --dearmor | write %s\n' \
       "$nvidia_gpg_url" "$nvidia_keyring_path"
   else
-    nvidia_keyring_temp=$(mktemp) || die "could not create NVIDIA keyring temporary file"
-    trap 'rm -f -- "$nvidia_keyring_temp"' EXIT
-    if ! printf '%s\n' "$nvidia_gpg_key" | gpg --dearmor >"$nvidia_keyring_temp"; then
-      die "could not dearmor the NVIDIA container toolkit signing key"
-    fi
     write_root_file_from_path "$nvidia_keyring_path" "$nvidia_keyring_temp"
     rm -f -- "$nvidia_keyring_temp"
     trap - EXIT
