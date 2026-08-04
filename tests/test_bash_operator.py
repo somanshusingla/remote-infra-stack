@@ -207,6 +207,56 @@ class BashOperatorTests(unittest.TestCase):
             )
             self.assertEqual(["rm", "-f", "--", remote_bootstrap], shlex.split(operations[3][-1]))
 
+    def test_bootstrap_gpu_forwards_pinned_cuda_image_to_overridden_target(self):
+        with self.operator_repository() as root:
+            remote_env = self.remote_env_with(
+                root,
+                REMOTE_HOST="gpu-target",
+                REMOTE_USER="gpu-operator",
+                REMOTE_ROOT="gpu-stack",
+            )
+            log = root / "fake.log"
+            result = self.run_script(
+                root, "bootstrap.sh", "--gpu", log=log, remote_env=remote_env
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+
+            operations = read_operations(log)
+            remote_bootstrap = scp_positionals(operations[1][1:])[-1].split(":", 1)[1]
+            self.assertEqual("gpu-operator@gpu-target", operations[2][-2])
+            self.assertEqual(
+                [
+                    "sudo", "bash", remote_bootstrap, "--install", "--gpu", "--cuda-image",
+                    "docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:5d2e53778e2180e01676aa8bac1aada242e95230ec97e21ecfb33de4e27cd1df",
+                ],
+                shlex.split(operations[2][-1]),
+            )
+
+    def test_bootstrap_gpu_rejects_invalid_cuda_image_catalog_before_remote_calls(self):
+        variants = {
+            "absent": lambda content: re.sub(r"(?m)^NVIDIA_CUDA_IMAGE=.*\n?", "", content),
+            "duplicate": lambda content: content + "\nNVIDIA_CUDA_IMAGE=docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:5d2e53778e2180e01676aa8bac1aada242e95230ec97e21ecfb33de4e27cd1df\n",
+            "malformed": lambda content: re.sub(r"(?m)^NVIDIA_CUDA_IMAGE=.*$", "NVIDIA_CUDA_IMAGE : invalid", content),
+            "unpinned": lambda content: re.sub(r"(?m)^NVIDIA_CUDA_IMAGE=.*$", "NVIDIA_CUDA_IMAGE=docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04", content),
+        }
+        for name, mutate in variants.items():
+            with self.subTest(name=name), self.operator_repository() as root:
+                versions = root / "versions.env"
+                versions.write_text(mutate(versions.read_text(encoding="utf-8")), encoding="utf-8")
+                log = root / "fake.log"
+                result = self.run_script(root, "bootstrap.sh", "--gpu", log=log)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("NVIDIA_CUDA_IMAGE", result.stderr)
+                self.assertEqual([], read_operations(log))
+
+    def test_bootstrap_rejects_unknown_options_before_remote_calls(self):
+        with self.operator_repository() as root:
+            log = root / "fake.log"
+            result = self.run_script(root, "bootstrap.sh", "--unexpected", log=log)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("usage: bootstrap.sh [--gpu]", result.stderr)
+            self.assertEqual([], read_operations(log))
+
     def test_bootstrap_uses_serialized_commands_and_unique_incoming_name(self):
         with self.operator_repository() as root:
             log = root / "fake.log"

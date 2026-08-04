@@ -1,8 +1,36 @@
 [CmdletBinding()]
-param()
+param([switch]$Gpu)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Get-NvidiaCudaImage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not [System.IO.File]::Exists($Path)) {
+        Throw-CommonError "NVIDIA_CUDA_IMAGE catalog is missing: $Path"
+    }
+
+    $image = ''
+    $count = 0
+    foreach ($rawLine in [System.IO.File]::ReadAllLines($Path)) {
+        $line = $rawLine.TrimEnd("`r")
+        if ($line -clike 'NVIDIA_CUDA_IMAGE=*') {
+            $count += 1
+            $image = $line.Substring('NVIDIA_CUDA_IMAGE='.Length)
+        } elseif ($line -clike 'NVIDIA_CUDA_IMAGE*') {
+            Throw-CommonError 'invalid NVIDIA_CUDA_IMAGE assignment in versions.env'
+        }
+    }
+    if ($count -ne 1) {
+        Throw-CommonError 'versions.env must contain exactly one NVIDIA_CUDA_IMAGE assignment'
+    }
+    if ($image -cnotmatch '^[^\s@]+@sha256:[0-9a-f]{64}$' -or $image.Contains(':latest')) {
+        Throw-CommonError 'NVIDIA_CUDA_IMAGE must be a single non-latest digest-pinned reference'
+    }
+    return $image
+}
 
 try {
     $scriptDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
@@ -26,6 +54,11 @@ try {
     )
     if (-not [System.IO.File]::Exists($bootstrapSource)) {
         Throw-CommonError "remote bootstrap script is missing: $bootstrapSource"
+    }
+    $cudaImage = if ($Gpu) {
+        Get-NvidiaCudaImage -Path ([System.IO.Path]::Combine($repositoryRoot, 'versions.env'))
+    } else {
+        $null
     }
     $operationId = [System.Guid]::NewGuid().ToString('N')
     $remoteBootstrap = '{0}/incoming/bootstrap-{1}.sh' -f @(
@@ -52,9 +85,11 @@ try {
             Throw-CommonError "scp failed with exit code $LASTEXITCODE"
         }
 
-        Invoke-SshCommand -Configuration $configuration -CommandArguments @(
-            'sudo', 'bash', $remoteBootstrap, '--install'
-        )
+        $bootstrapArguments = @('sudo', 'bash', $remoteBootstrap, '--install')
+        if ($Gpu) {
+            $bootstrapArguments += @('--gpu', '--cuda-image', $cudaImage)
+        }
+        Invoke-SshCommand -Configuration $configuration -CommandArguments $bootstrapArguments
         Invoke-SshCommand -Configuration $configuration -CommandArguments @(
             'rm', '-f', '--', $remoteBootstrap
         )
