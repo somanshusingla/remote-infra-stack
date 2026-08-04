@@ -117,6 +117,21 @@ verify_resident_model() {
   fi
 }
 
+verify_generation() {
+  local timeout=$1
+  local phase=$2
+  if ! "$jq_bin" -n --arg model "$llm_model" \
+      '{model: $model, prompt: "healthcheck", stream: false, options: {num_predict: 1}, keep_alive: "5m"}' |
+    "$curl_bin" --fail --silent --show-error --max-time "$timeout" \
+      --header 'Content-Type: application/json' --data-binary @- \
+      http://127.0.0.1:11440/api/generate |
+    "$jq_bin" -e \
+      'type == "object" and (.response | type == "string") and (.done == true)' \
+      >/dev/null 2>&1; then
+    die "bounded Ollama $phase generation failed"
+  fi
+}
+
 if [[ -n "${selected[core]+x}" ]]; then
   compose_exec app-postgres sh -c 'exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null
   compose_exec app-redis sh -c 'REDISCLI_AUTH="$APP_REDIS_PASSWORD" exec redis-cli ping' >/dev/null
@@ -139,17 +154,9 @@ if [[ -n "${selected[inference]+x}" ]]; then
   verify_gpu_device_request ollama-llm
   verify_gpu_device_request ollama-embedding
 
-  if ! "$jq_bin" -n --arg model "$llm_model" \
-      '{model: $model, prompt: "healthcheck", stream: false, options: {num_predict: 1}, keep_alive: "5m"}' |
-    "$curl_bin" --fail --silent --show-error --max-time 120 \
-      --header 'Content-Type: application/json' --data-binary @- \
-      http://127.0.0.1:11440/api/generate |
-    "$jq_bin" -e \
-      'type == "object" and (.response | type == "string") and (.done == true)' \
-      >/dev/null 2>&1; then
-    die "bounded Ollama generation failed"
-  fi
+  verify_generation 600 cold
   verify_resident_model http://127.0.0.1:11440/api/ps "$llm_model"
+  verify_generation 120 warm
 
   if ! "$jq_bin" -n --arg model "$embedding_model" \
       '{model: $model, input: "healthcheck", keep_alive: "5m"}' |

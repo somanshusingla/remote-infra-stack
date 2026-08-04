@@ -11,7 +11,13 @@ import unittest
 from pathlib import Path
 
 from tests.helpers import repo_path
-from tests.test_remote_runtime import BASH_BIN, shell_path, usable_bash, write_test_env
+from tests.test_remote_runtime import (
+    BASH_BIN,
+    shell_path,
+    usable_bash,
+    write_generation_phase_curl,
+    write_test_env,
+)
 
 
 @unittest.skipUnless(usable_bash(), "requires a usable Bash")
@@ -40,6 +46,9 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.log = self.root / "docker.log"
         self.sysctl_log = self.root / "sysctl.log"
         self.nvidia_log = self.root / "nvidia.log"
+        self.curl_state = self.root / "curl-state"
+        self.fake_curl = self.root / "curl"
+        write_generation_phase_curl(self.fake_curl)
         self.fake_sysctl = self.root / "sysctl"
         self.fake_sysctl.write_text(
             """#!/usr/bin/env bash
@@ -67,13 +76,15 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
             **os.environ,
             "PATH": f"{shell_path(repo_path('tests/fakes'))}{os.pathsep}{os.environ.get('PATH', '')}",
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
-            "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
+            "CURL_BIN": shell_path(self.fake_curl),
             "SYSCTL_BIN": shell_path(self.fake_sysctl),
             "DF_BIN": shell_path(self.fake_df),
             "NVIDIA_SMI_BIN": shell_path(repo_path("tests/fakes/nvidia-smi")),
             "STACK_DOCKER_LOG": shell_path(self.log),
             "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
             "STACK_NVIDIA_LOG": shell_path(self.nvidia_log),
+            "STACK_FAKE_CURL_DELEGATE": shell_path(repo_path("tests/fakes/docker")),
+            "STACK_FAKE_CURL_STATE": shell_path(self.curl_state),
         }
 
     def tearDown(self):
@@ -438,7 +449,8 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
 
     def test_each_inference_health_failure_preserves_current_and_ollama_volumes(self):
         cases = (
-            ("chat", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "generate"}, "/api/generate"),
+            ("cold", {"STACK_FAKE_FAIL_OLLAMA_GENERATION_PHASE": "cold"}, "/api/generate"),
+            ("warm", {"STACK_FAKE_FAIL_OLLAMA_GENERATION_PHASE": "warm"}, "11440/api/ps"),
             ("embed", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "embed"}, "/api/embed"),
             ("json", {"STACK_FAKE_GENERATE_RESPONSE": "not-json"}, "/api/generate"),
             ("model", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[]}'}, "11440/api/ps"),
@@ -452,6 +464,7 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
         try:
             for index, (label, failure_env, reached_boundary) in enumerate(cases):
                 with self.subTest(label=label):
+                    self.curl_state.unlink(missing_ok=True)
                     case_root = original_root / f"inference-health-{label}"
                     for child in ("incoming", "runtime", "releases"):
                         (case_root / child).mkdir(parents=True)

@@ -32,6 +32,29 @@ def write_test_env(destination: Path) -> None:
     )
 
 
+def write_generation_phase_curl(destination: Path) -> None:
+    destination.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+arguments=("$@")
+endpoint=${arguments[$((${#arguments[@]} - 1))]:-}
+if [[ "$endpoint" == http://127.0.0.1:11440/api/generate ]]; then
+  count=0
+  [[ ! -f "$STACK_FAKE_CURL_STATE" ]] || read -r count <"$STACK_FAKE_CURL_STATE"
+  ((count += 1))
+  printf '%s\n' "$count" >"$STACK_FAKE_CURL_STATE"
+  if [[ "${STACK_FAKE_FAIL_OLLAMA_GENERATION_PHASE:-}" == cold && "$count" == 1 ]] ||
+     [[ "${STACK_FAKE_FAIL_OLLAMA_GENERATION_PHASE:-}" == warm && "$count" == 2 ]]; then
+    export STACK_FAKE_FAIL_OLLAMA_REQUEST=generate
+  fi
+fi
+exec "$STACK_FAKE_CURL_DELEGATE" "$@"
+""",
+        encoding="utf-8",
+    )
+    destination.chmod(0o755)
+
+
 @unittest.skipUnless(usable_bash(), "requires a usable Bash")
 class RemoteRuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -44,6 +67,9 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.sysctl_log = self.root / "sysctl.log"
         self.nvidia_log = self.root / "nvidia.log"
         self.http_body_log = self.root / "http-bodies.log"
+        self.curl_state = self.root / "curl-state"
+        self.fake_curl = self.root / "curl"
+        write_generation_phase_curl(self.fake_curl)
         self.fake_sysctl = self.root / "sysctl"
         self.fake_sysctl.write_text(
             """#!/usr/bin/env bash
@@ -93,7 +119,7 @@ printf 'Avail\\n%s\\n' "$available"
             "STACK_ROOT": shell_path(self.root),
             "STACK_RELEASE_DIR": shell_path(repo_path(".")),
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
-            "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
+            "CURL_BIN": shell_path(self.fake_curl),
             "JQ_BIN": shell_path(repo_path("tests/fakes/jq")),
             "FREE_BIN": shell_path(self.fake_free),
             "SYSCTL_BIN": shell_path(self.fake_sysctl),
@@ -102,6 +128,8 @@ printf 'Avail\\n%s\\n' "$available"
             "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
             "STACK_NVIDIA_LOG": shell_path(self.nvidia_log),
             "STACK_FAKE_HTTP_BODY_LOG": shell_path(self.http_body_log),
+            "STACK_FAKE_CURL_DELEGATE": shell_path(repo_path("tests/fakes/docker")),
+            "STACK_FAKE_CURL_STATE": shell_path(self.curl_state),
         }
 
     def tearDown(self):
@@ -434,20 +462,31 @@ printf 'Avail\\n%s\\n' "$available"
                 "options": {"num_predict": 1}, "keep_alive": "5m",
             },
             {
+                "model": "gemma4:e4b", "prompt": "healthcheck", "stream": False,
+                "options": {"num_predict": 1}, "keep_alive": "5m",
+            },
+            {
                 "model": "embeddinggemma:300m", "input": "healthcheck",
                 "keep_alive": "5m",
             },
         ], self.http_bodies())
         calls = self.docker_calls()
-        expected_post_prefix = [
-            "docker", "--fail", "--silent", "--show-error", "--max-time", "120",
-            "--header", "Content-Type: application/json", "--data-binary", "@-",
+        inference_http_calls = [
+            call for call in calls
+            if call[-1].startswith("http://127.0.0.1:1144")
         ]
-        self.assertIn(
-            expected_post_prefix + ["http://127.0.0.1:11440/api/generate"], calls
-        )
-        self.assertIn(
-            expected_post_prefix + ["http://127.0.0.1:11441/api/embed"], calls
+        self.assertEqual(
+            [
+                ("600", "http://127.0.0.1:11440/api/generate"),
+                ("120", "http://127.0.0.1:11440/api/ps"),
+                ("120", "http://127.0.0.1:11440/api/generate"),
+                ("120", "http://127.0.0.1:11441/api/embed"),
+                ("120", "http://127.0.0.1:11441/api/ps"),
+            ],
+            [
+                (call[call.index("--max-time") + 1], call[-1])
+                for call in inference_http_calls
+            ],
         )
         for endpoint in (
             "http://127.0.0.1:11440/api/ps",
@@ -468,9 +507,56 @@ printf 'Avail\\n%s\\n' "$available"
         self.assertNotIn("generated-health-secret", captured)
         self.assertNotIn("0.125", captured)
 
+    def test_health_rejects_cold_and_warm_generation_failures_without_emitting_responses(self):
+        cases = (
+            (
+                "cold", 1,
+                [("600", "http://127.0.0.1:11440/api/generate")],
+            ),
+            (
+                "warm", 2,
+                [
+                    ("600", "http://127.0.0.1:11440/api/generate"),
+                    ("120", "http://127.0.0.1:11440/api/ps"),
+                    ("120", "http://127.0.0.1:11440/api/generate"),
+                ],
+            ),
+        )
+        for phase, expected_body_count, expected_calls in cases:
+            with self.subTest(phase=phase):
+                self.log.unlink(missing_ok=True)
+                self.http_body_log.unlink(missing_ok=True)
+                self.curl_state.unlink(missing_ok=True)
+
+                result = self.run_script(
+                    "health.sh", "inference",
+                    STACK_FAKE_FAIL_OLLAMA_GENERATION_PHASE=phase,
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(phase, result.stderr)
+                self.assertEqual(expected_body_count, len(self.http_bodies()))
+                generation_path = "http://127.0.0.1:11440/api/generate"
+                inference_calls = [
+                    call for call in self.docker_calls()
+                    if call[-1] == generation_path or call[-1].endswith("11440/api/ps")
+                ]
+                self.assertEqual(
+                    expected_calls,
+                    [
+                        (call[call.index("--max-time") + 1], call[-1])
+                        for call in inference_calls
+                    ],
+                )
+                captured = (
+                    result.stdout + result.stderr
+                    + self.log.read_text(encoding="utf-8")
+                )
+                self.assertNotIn("generated-health-secret", captured)
+                self.assertNotIn("0.125", captured)
+
     def test_health_rejects_each_inference_execution_failure(self):
         cases = (
-            ("chat-failure", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "generate"}),
             ("embedding-failure", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "embed"}),
             ("invalid-json", {"STACK_FAKE_GENERATE_RESPONSE": "not-json"}),
             ("missing-model", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[]}'}),
