@@ -176,6 +176,13 @@ services:
       timeout: 10s
       retries: 12
       start_period: 90m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     mem_limit: ${OLLAMA_LLM_MEMORY:-14g}
     networks: [infra]
 
@@ -201,6 +208,13 @@ services:
       timeout: 10s
       retries: 12
       start_period: 90m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     mem_limit: ${OLLAMA_EMBEDDING_MEMORY:-2g}
     networks: [infra]
 

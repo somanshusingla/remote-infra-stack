@@ -75,6 +75,10 @@ class InferenceComposeTests(unittest.TestCase):
         self.assertEqual("1h30m0s", service["healthcheck"]["start_period"])
         self.assertEqual(memory, int(service["mem_limit"]))
         self.assertEqual({"infra": None}, service["networks"])
+        self.assertEqual(
+            [{"capabilities": ["gpu"], "count": -1, "driver": "nvidia"}],
+            service["deploy"]["resources"]["reservations"]["devices"],
+        )
         self.assertNotIn("depends_on", service)
         self.assertNotIn("user", service)
 
@@ -147,9 +151,13 @@ class InferenceComposeTests(unittest.TestCase):
         }
         cases.append(("cross dependency", cross_dependency))
 
+        no_gpu_reservation = deepcopy(llm)
+        del no_gpu_reservation["deploy"]["resources"]["reservations"]["devices"]
+        cases.append(("missing GPU reservation", no_gpu_reservation))
+
         for name, mutated in cases:
             with self.subTest(mutation=name):
-                with self.assertRaises(AssertionError):
+                with self.assertRaises((AssertionError, KeyError)):
                     self.assert_inference_service_contract(
                         mutated,
                         model="gemma4:e4b",

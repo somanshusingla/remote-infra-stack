@@ -22,6 +22,14 @@ class ComposeInvariantTests(unittest.TestCase):
                 self.assertNotIn(int(port["published"]), published, name)
                 published.add(int(port["published"]))
 
+    def test_non_inference_profiles_render_without_selecting_ollama(self):
+        model = render_compose(
+            "core", "vector", "dynamodb", "search", "observability", "tools"
+        )
+
+        self.assertNotIn("ollama-llm", model["services"])
+        self.assertNotIn("ollama-embedding", model["services"])
+
     def assert_images_network_and_project_names_are_stable(self, model):
         expected_images = {
             "app-postgres": "APP_POSTGRES_IMAGE",
