@@ -80,7 +80,7 @@ class DocumentationContractTests(unittest.TestCase):
             "required packages",
             "AWS",
             "GCP",
-            "existing SSH-accessible Ubuntu VM",
+            "existing SSH-accessible\nUbuntu VM",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, readme)
@@ -254,11 +254,19 @@ class DocumentationContractTests(unittest.TestCase):
             document = self.read_document(relative_path)
             with self.subTest(document=relative_path):
                 self.assertIn(
-                    "./scripts/deploy.sh core vector dynamodb inference",
+                    "./scripts/deploy.sh core vector dynamodb",
                     document,
                 )
                 self.assertIn(
-                    ".\\scripts\\deploy.ps1 core vector dynamodb inference",
+                    "./scripts/deploy.sh inference",
+                    document,
+                )
+                self.assertIn(
+                    ".\\scripts\\deploy.ps1 core vector dynamodb",
+                    document,
+                )
+                self.assertIn(
+                    ".\\scripts\\deploy.ps1 inference",
                     document,
                 )
 
@@ -396,28 +404,36 @@ class DocumentationContractTests(unittest.TestCase):
         bash_steps = (
             "git clone https://github.com/somanshusingla/remote-infra-stack.git",
             "./scripts/init-env.sh",
-            "cp remote.env.example remote.env",
-            "./scripts/check.sh core vector dynamodb inference",
+            "cp remote.env.example remote.data.env",
+            "cp remote.env.example remote.gpu.env",
+            "./scripts/check.sh core vector dynamodb",
+            "./scripts/check.sh inference",
             "./scripts/bootstrap.sh",
-            "./scripts/deploy.sh core vector dynamodb inference",
-            "./scripts/tunnel.sh core vector dynamodb inference",
+            "./scripts/deploy.sh core vector dynamodb",
+            "./scripts/deploy.sh inference",
+            "./scripts/tunnel.sh core vector dynamodb",
+            "./scripts/tunnel.sh inference",
             "./scripts/stack.sh status",
             "./scripts/stack.sh logs",
-            "./scripts/stack.sh stop",
+            "./scripts/stack.sh stop search",
             "./scripts/stack.sh down",
             "./scripts/stack.sh destroy",
         )
         powershell_steps = (
             "git clone https://github.com/somanshusingla/remote-infra-stack.git",
             ".\\scripts\\init-env.ps1",
-            "Copy-Item .\\remote.env.example .\\remote.env",
-            ".\\scripts\\check.ps1 core vector dynamodb inference",
+            "Copy-Item .\\remote.env.example .\\remote.data.env",
+            "Copy-Item .\\remote.env.example .\\remote.gpu.env",
+            ".\\scripts\\check.ps1 core vector dynamodb",
+            ".\\scripts\\check.ps1 inference",
             ".\\scripts\\bootstrap.ps1",
-            ".\\scripts\\deploy.ps1 core vector dynamodb inference",
-            ".\\scripts\\tunnel.ps1 core vector dynamodb inference",
+            ".\\scripts\\deploy.ps1 core vector dynamodb",
+            ".\\scripts\\deploy.ps1 inference",
+            ".\\scripts\\tunnel.ps1 core vector dynamodb",
+            ".\\scripts\\tunnel.ps1 inference",
             ".\\scripts\\stack.ps1 status",
             ".\\scripts\\stack.ps1 logs",
-            ".\\scripts\\stack.ps1 stop",
+            ".\\scripts\\stack.ps1 stop search",
             ".\\scripts\\stack.ps1 down",
             ".\\scripts\\stack.ps1 destroy",
         )
@@ -447,7 +463,7 @@ class DocumentationContractTests(unittest.TestCase):
 
         self.assertIn("32 GiB does not guarantee that all profiles fit at peak", operations)
         self.assertIn("20 GiB", operations)
-        self.assertIn("CPU-only", operations)
+        self.assertIn("GPU host runs Ollama", operations)
         self.assertNotIn("48 GiB is the practical minimum", operations)
         self.assertNotIn("64 GiB is preferred", operations)
 

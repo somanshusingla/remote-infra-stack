@@ -1,6 +1,7 @@
 .worktrees/
 .env
 remote.env
+remote.*.env
 .artifacts/
 *.tar.gz
 *.sha256

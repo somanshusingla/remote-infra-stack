@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,6 +155,29 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertRegex(ignored, r"(?m)^\.env$")
         self.assertRegex(ignored, r"(?m)^remote\.env$")
         self.assertIn(".artifacts/", ignored)
+
+    def test_remote_target_env_files_are_ignored_by_git(self):
+        candidates = (
+            "remote.data.env",
+            "remote.gpu.env",
+            ".env",
+            "remote.env",
+            "remote.env.example",
+            "tracked-style-name",
+        )
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--", *candidates],
+            cwd=repo_path("."),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            {"remote.data.env", "remote.gpu.env", ".env", "remote.env"},
+            set(result.stdout.splitlines()),
+        )
 
     def test_remote_scripts_are_forced_to_lf(self):
         attributes = repo_path(".gitattributes").read_text(encoding="utf-8")

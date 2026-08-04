@@ -1,9 +1,9 @@
 # Remote Infra Stack
 
-Remote Infra Stack runs a profile-selected set of development databases and UIs on one
-existing SSH-accessible Ubuntu VM. Applications and browsers stay on your Windows,
-macOS, or Linux machine and connect through profile-scoped SSH tunnels; service ports
-are never published on the VM's public interfaces.
+Remote Infra Stack runs its data services and GPU inference on separate existing SSH-accessible
+Ubuntu VMs. Applications and browsers stay on your Windows, macOS, or
+Linux machine and connect through profile-scoped SSH tunnels; service ports are never
+published on either VM's public interfaces.
 
 This is a personal development stack, not production infrastructure. Its data is
 **disposable**. Persistent state uses named Docker volumes, but deleting the VM or
@@ -23,7 +23,7 @@ No service starts unless its profile is selected.
 | `observability` | Langfuse web/worker, dedicated PostgreSQL and Redis, ClickHouse, MinIO | Isolated tracing stack |
 | `tools` | pgAdmin, RedisInsight | Administration UIs for `core`; always select `core` with `tools` |
 | `dynamodb` | DynamoDB Local, `dynamodb-admin` | Local-compatible API and browser UI |
-| `inference` | Two isolated Ollama servers | CPU chat and embedding inference |
+| `inference` | Two isolated Ollama servers | GPU chat and embedding inference |
 
 Application PostgreSQL and Redis are independent from the private PostgreSQL and Redis
 used by Langfuse.
@@ -37,8 +37,8 @@ Run the local scripts from the repository root. The local machine needs Git, Ope
   `./scripts/check.sh`; or
 - Windows PowerShell 5.1+ or PowerShell 7+, using the `.ps1` scripts.
 
-The project does not provision cloud resources. Supply an existing SSH-accessible
-Ubuntu VM in AWS, GCP, or another provider with:
+The project does not provision cloud resources. Supply two existing SSH-accessible
+Ubuntu VMs in AWS, GCP, or another provider with:
 
 - Ubuntu 22.04, Ubuntu 24.04, or Ubuntu 26.04 LTS on `amd64`;
 - systemd, apt, and passwordless `sudo` for the SSH user; and
@@ -51,8 +51,8 @@ requires at least 20 GiB free on Docker's storage filesystem for the two model c
 and image layers. The Compose memory values are container limits, not reservations.
 A 32 GiB host does not guarantee that all profiles fit at peak; select only what you need,
 monitor the VM, and resize the host or raise individual limits when real workloads
-require it. The CPU-only Ollama services can take minutes to answer on general-purpose
-cloud CPUs, especially while `gemma4:e4b` is loading.
+require it. Put `inference` on the GPU host; its first model download can still take
+minutes, while later deployments reuse its persistent model caches.
 
 `net.ipv4.ip_forward=1` is a host-global IPv4 routing capability, not a container-only
 setting. Stack ports remain loopback-only behind an SSH-only cloud firewall. On a
@@ -62,8 +62,8 @@ operator responsibility.
 Ubuntu 26.04 bootstrap and pinned `linux/amd64` image manifests were verified on a
 minimal GCP VM; the sanitized evidence is in
 [docs/verification/task-7-ubuntu-bootstrap.md](docs/verification/task-7-ubuntu-bootstrap.md).
-The `core vector dynamodb inference` profiles were subsequently deployed and exercised
-on a 64 GiB GCP VM; that sanitized acceptance record is in
+The data profiles and inference were subsequently deployed and exercised; that
+sanitized acceptance record is in
 [docs/verification/data-and-inference-gcp-smoke.md](docs/verification/data-and-inference-gcp-smoke.md).
 All seven profiles and their browser UIs were then started together on that VM; the
 sanitized record is in
@@ -75,9 +75,12 @@ must also support that release.
 
 ## Quick start
 
-The examples select the usual personal-development set: `core`, `vector`, `dynamodb`,
-and `inference`. Add `search`, `observability`, or `tools` when needed. `tools` requires
-`core`, and duplicate or unknown profiles are rejected.
+The canonical workflow has two targets: the data host runs `core`, `vector`,
+`dynamodb`, and optionally `search`, `observability`, or `tools`; the GPU host runs
+only `inference`. `tools` requires `core`, and duplicate or unknown profiles are
+rejected. Both targets deliberately share the same ignored `.env`: this is an accepted
+secret-distribution trade-off for this personal stack, so restrict SSH access to both
+hosts and do not treat the GPU host as a less-trusted environment.
 
 ### macOS/Linux Bash
 
@@ -86,17 +89,27 @@ git clone https://github.com/somanshusingla/remote-infra-stack.git
 cd remote-infra-stack
 
 ./scripts/init-env.sh
-cp remote.env.example remote.env
-${EDITOR:-vi} remote.env
+cp remote.env.example remote.data.env
+cp remote.env.example remote.gpu.env
+${EDITOR:-vi} remote.data.env remote.gpu.env
 
-./scripts/check.sh core vector dynamodb inference
-./scripts/bootstrap.sh
-./scripts/deploy.sh core vector dynamodb inference
-./scripts/tunnel.sh core vector dynamodb inference
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/check.sh core vector dynamodb
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/bootstrap.sh
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/deploy.sh core vector dynamodb
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/check.sh inference
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/deploy.sh inference
 ```
 
-Keep the tunnel command running while local clients use the endpoints. It occupies the
-terminal; open another terminal for application and lifecycle commands.
+After GPU acceptance, use two terminals simultaneously:
+
+```bash
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/tunnel.sh inference
+```
+
+Keep both tunnel commands running while local clients use the endpoints. Each occupies
+its terminal; open another terminal for application and lifecycle commands.
 
 ### Windows PowerShell
 
@@ -105,18 +118,34 @@ git clone https://github.com/somanshusingla/remote-infra-stack.git
 Set-Location remote-infra-stack
 
 .\scripts\init-env.ps1
-Copy-Item .\remote.env.example .\remote.env
-notepad .\remote.env
+Copy-Item .\remote.env.example .\remote.data.env
+Copy-Item .\remote.env.example .\remote.gpu.env
+notepad .\remote.data.env
+notepad .\remote.gpu.env
 
-.\scripts\check.ps1 core vector dynamodb inference
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\check.ps1 core vector dynamodb
 .\scripts\bootstrap.ps1
-.\scripts\deploy.ps1 core vector dynamodb inference
-.\scripts\tunnel.ps1 core vector dynamodb inference
+.\scripts\deploy.ps1 core vector dynamodb
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
+.\scripts\check.ps1 inference
+.\scripts\bootstrap.ps1
+.\scripts\deploy.ps1 inference
 ```
 
-Keep this PowerShell window open for the tunnel and use another window for local
-applications and lifecycle commands. `Ctrl+C` closes the tunnel without stopping the
-remote services.
+After GPU acceptance, start these in two PowerShell windows:
+
+```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\tunnel.ps1 core vector dynamodb
+
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
+.\scripts\tunnel.ps1 inference
+```
+
+Keep both PowerShell windows open for the tunnels and use another window for local
+applications and lifecycle commands. `Ctrl+C` closes a tunnel without stopping remote
+services.
 
 ### Configuration files
 
@@ -138,7 +167,8 @@ OLLAMA_CONTEXT_LENGTH=8192
 OLLAMA_KEEP_ALIVE=5m
 ```
 
-Copy `remote.env.example` to the ignored `remote.env` and edit at least the SSH target:
+Copy `remote.env.example` to both ignored target files, then set the data host in
+`remote.data.env` and the GPU host in `remote.gpu.env`:
 
 ```dotenv
 REMOTE_HOST=remote-infra-stack
@@ -148,8 +178,8 @@ REMOTE_IDENTITY_FILE=
 REMOTE_ROOT=remote-infra-stack
 ```
 
-For an existing ignored `remote.env`, manually add these five tunnel settings instead
-of replacing the file:
+For an existing ignored target file, manually add these five tunnel settings instead of
+replacing the file:
 
 ```dotenv
 LOCAL_CHROMA_ADMIN_PORT=18001
@@ -159,13 +189,17 @@ LOCAL_OLLAMA_LLM_PORT=11440
 LOCAL_OLLAMA_EMBEDDING_PORT=11441
 ```
 
-`REMOTE_HOST` may be a DNS name, IP address, or local SSH-config alias. Set
+`REMOTE_HOST` may be a DNS name, IP address, or local SSH-config alias. Set it
+independently in each target file; `STACK_REMOTE_ENV` must be the absolute path to the
+target file for every `check`, `bootstrap`, `deploy`, `tunnel`, or `stack` command. Set
 `REMOTE_USER` and `REMOTE_IDENTITY_FILE` when they are not already supplied by the SSH
 configuration. Keep `REMOTE_ROOT` relative to the remote user's home. The remaining
 `LOCAL_*_PORT` values in `remote.env.example` control the local side of each tunnel.
+The data tunnel owns the data endpoints and the GPU tunnel owns only
+`127.0.0.1:11440` and `127.0.0.1:11441`.
 
-`check` validates both ignored files, the selected profiles, required local commands,
-script syntax, a clean committed Git `HEAD`, and the Compose model when local Docker
+`check` validates `.env`, the selected ignored target file, the selected profiles,
+required local commands, script syntax, a clean committed Git `HEAD`, and the Compose model when local Docker
 Compose is available. It does not mutate the VM. `deploy` archives only the clean Git
 `HEAD` and uploads `.env` separately with private permissions.
 
@@ -192,7 +226,7 @@ defaults only on the local loopback interface:
 | `tools` | pgAdmin | `http://127.0.0.1:5050` | Browser UI |
 | `tools` | RedisInsight | `http://127.0.0.1:5540` | Browser UI |
 
-Override local ports in `remote.env` if a default is occupied. The tunnel refuses
+Override local ports in the relevant target file if a default is occupied. The tunnel refuses
 duplicate ports and, where the platform supports probing, refuses ports that are
 already in use.
 
@@ -267,7 +301,11 @@ The first `inference` deployment waits while each container downloads and verifi
 model, so it can be much slower than later deployments. Downloads live in separate
 named volumes. If a pull or deployment is interrupted, run the same deploy command
 again: Ollama resumes/reuses cached layers and the release is activated only after both
-models are ready.
+models are ready. Accept the GPU target only after both local Ollama calls succeed
+through its tunnel. If GPU acceptance fails, keep any legacy CPU inference running and
+retry or diagnose the GPU target; do not cut over. Once it succeeds, stop legacy data
+host inference with that target's absolute `STACK_REMOTE_ENV`, while preserving the old
+model volumes. Those old volumes are not a supported fallback.
 
 OpenSearch keeps its security plugin enabled. Sign in as `admin` with
 `OPENSEARCH_INITIAL_ADMIN_PASSWORD`. Its bundled certificate is a development TLS
@@ -293,19 +331,23 @@ network. RedisInsight is preconfigured for `app-redis`. Sign in to the MinIO Con
 Use either local operator surface:
 
 ```bash
-./scripts/stack.sh status
-./scripts/stack.sh logs search
-./scripts/stack.sh stop search
-./scripts/stack.sh down
-./scripts/stack.sh up core vector dynamodb inference
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh status
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh logs search
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop search
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh down
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh up core vector dynamodb
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/stack.sh status
 ```
 
 ```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
 .\scripts\stack.ps1 status
 .\scripts\stack.ps1 logs search
 .\scripts\stack.ps1 stop search
 .\scripts\stack.ps1 down
-.\scripts\stack.ps1 up core vector dynamodb inference
+.\scripts\stack.ps1 up core vector dynamodb
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
+.\scripts\stack.ps1 status
 ```
 
 `stop` stops the selected profiles. `down` stops and removes the project's containers
@@ -317,10 +359,11 @@ causing permanent data loss. It requires typing the configured remote
 target and the exact token `DESTROY-remote-infra-stack` interactively:
 
 ```bash
-./scripts/stack.sh destroy
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh destroy
 ```
 
 ```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
 .\scripts\stack.ps1 destroy
 ```
 
@@ -328,3 +371,11 @@ Do not use `destroy` for routine shutdown. There is no automated backup or resto
 The named volumes are intentionally disposable and this repository provides no backup,
 export, restore, or cross-VM migration script. Deleting the VM or its disk deletes the
 data; that is an accepted boundary for this personal-development stack.
+
+For GPU Spot recovery, stop/start or replace only the GPU VM in the cloud provider.
+When its ephemeral IP changes, edit only `REMOTE_HOST` in `remote.gpu.env`; Docker
+automatically restarts the containers and their named model volumes persist. Restart
+the GPU tunnel using its absolute `STACK_REMOTE_ENV` path. Do not redeploy unchanged
+code just to refresh an address, and do not disturb the data host. Treat the daily
+Backup and DR plan as recovery media for the VM or disk, not an application-level backup
+guarantee; use service-specific exports for important data.
