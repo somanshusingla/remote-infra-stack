@@ -787,6 +787,25 @@ printf 'Avail\\n%s\\n' "$available"
             index for index, call in enumerate(calls) if "config" in call
         ))
 
+    def test_preflight_accepts_each_complete_t4_label_at_both_boundaries(self):
+        cases = (
+            {"STACK_FAKE_HOST_GPU_NAMES": "Tesla T4"},
+            {"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4"},
+            {"STACK_FAKE_CONTAINER_GPU_NAMES": "Tesla T4"},
+            {"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4"},
+        )
+        for env in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                self.nvidia_log.unlink(missing_ok=True)
+
+                result = self.run_script(
+                    "preflight.sh", "inference", **self.capacity_env(), **env
+                )
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertTrue(any("config" in call for call in self.docker_calls()))
+
     def test_preflight_rejects_missing_or_malformed_cuda_pin_before_compose(self):
         marker = self.root / "gpu-parser-must-not-run"
         valid_pin = (
@@ -820,12 +839,16 @@ printf 'Avail\\n%s\\n' "$available"
     def test_preflight_rejects_wrong_or_failed_host_and_container_gpu_before_compose(self):
         cases = (
             ({"STACK_FAKE_HOST_GPU_NAMES": ""}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "Tesla V100"}, "host"),
             ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA A100"}, "host"),
-            ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4\nNVIDIA T4"}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4 extra"}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "Tesla T4\nNVIDIA T4"}, "host"),
             ({"STACK_FAKE_NVIDIA_STATUS": "7"}, "host"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": ""}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "Tesla V100"}, "container"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA A100"}, "container"),
-            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4\nNVIDIA T4"}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4 extra"}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "Tesla T4\nNVIDIA T4"}, "container"),
             ({"STACK_FAKE_CONTAINER_GPU_STATUS": "8"}, "container"),
         )
         for env, boundary in cases:

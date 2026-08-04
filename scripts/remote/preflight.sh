@@ -6,6 +6,13 @@ die() {
   exit 1
 }
 
+is_t4_gpu_name() {
+  case "$1" in
+    "Tesla T4"|"NVIDIA T4") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
@@ -81,14 +88,18 @@ if [[ -n "${selected[inference]+x}" ]]; then
   host_gpu_output=$("$nvidia_smi_bin" \
     --query-gpu=name --format=csv,noheader 2>/dev/null) ||
     die "host GPU validation failed"
-  [[ "$host_gpu_output" == "NVIDIA T4" ]] ||
-    die "host GPU validation requires exactly one NVIDIA T4"
+  [[ -n "$host_gpu_output" && "$host_gpu_output" != *$'\n'* ]] ||
+    die "host GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
+  is_t4_gpu_name "$host_gpu_output" ||
+    die "host GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 
   container_gpu_output=$("$docker_bin" run --rm --gpus all "$cuda_image" \
     nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) ||
     die "container GPU validation failed"
-  [[ "$container_gpu_output" == "NVIDIA T4" ]] ||
-    die "container GPU validation requires exactly one NVIDIA T4"
+  [[ -n "$container_gpu_output" && "$container_gpu_output" != *$'\n'* ]] ||
+    die "container GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
+  is_t4_gpu_name "$container_gpu_output" ||
+    die "container GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 
   docker_root=$("$docker_bin" info --format '{{.DockerRootDir}}' 2>/dev/null) ||
     die "could not determine Docker storage root"

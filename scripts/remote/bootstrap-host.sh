@@ -6,6 +6,13 @@ die() {
   exit 1
 }
 
+is_t4_gpu_name() {
+  case "$1" in
+    "Tesla T4"|"NVIDIA T4") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 case "${1:-}" in
   --check|--install)
     mode=$1
@@ -81,8 +88,10 @@ if (( gpu_mode == 1 )); then
   mapfile -t gpu_names <"$nvidia_smi_output_temp"
   rm -f -- "$nvidia_smi_output_temp"
   trap - EXIT
-  [[ ${#gpu_names[@]} -eq 1 && ${gpu_names[0]} == "NVIDIA T4" ]] ||
-    die "GPU mode requires exactly one NVIDIA T4"
+  [[ ${#gpu_names[@]} -eq 1 ]] ||
+    die "GPU mode requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
+  is_t4_gpu_name "${gpu_names[0]}" ||
+    die "GPU mode requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 fi
 
 codename=${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}
@@ -322,7 +331,7 @@ if [[ "$dry_run" == 1 ]]; then
   if (( gpu_mode == 1 )); then
     run_root docker run --rm --gpus all "$cuda_image" \
       nvidia-smi --query-gpu=name --format=csv,noheader
-    printf '+ verify GPU container output is exactly one NVIDIA T4\n'
+    printf '+ verify GPU container output is exactly one NVIDIA T4 (NVIDIA T4 or Tesla T4)\n'
   fi
   printf 'Dry run complete; no privileged changes were executed.\n'
   exit 0
@@ -343,8 +352,10 @@ if (( gpu_mode == 1 )); then
   mapfile -t container_gpu_names <"$container_gpu_output_temp"
   rm -f -- "$container_gpu_output_temp"
   trap - EXIT
-  [[ ${#container_gpu_names[@]} -eq 1 && ${container_gpu_names[0]} == "NVIDIA T4" ]] ||
-    die "GPU container validation requires exactly one NVIDIA T4"
+  [[ ${#container_gpu_names[@]} -eq 1 ]] ||
+    die "GPU container validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
+  is_t4_gpu_name "${container_gpu_names[0]}" ||
+    die "GPU container validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 fi
 printf 'Docker bootstrap complete for Ubuntu %s (%s), amd64; log out and back in for Docker group access.\n' \
   "${VERSION_ID:-unknown}" "$codename"

@@ -483,8 +483,28 @@ esac
         self.assertFalse([line for line in invocations if line.startswith("MUTATE")])
         self.assertNotIn("apt-get", result.stdout)
 
+    def test_gpu_host_inventory_accepts_each_complete_t4_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            self.create_repository(repo, "resolute")
+            for gpu_names in ("Tesla T4", "NVIDIA T4"):
+                with self.subTest(gpu_names=gpu_names):
+                    result, _ = self.run_bootstrap(
+                        "ubuntu-26.04",
+                        repo,
+                        arguments=("--gpu", "--cuda-image", self.cuda_image),
+                        gpu_names=gpu_names,
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+
     def test_gpu_inventory_must_be_exactly_one_t4_before_apt_changes(self):
-        invalid_inventories = ("", "NVIDIA T4\nNVIDIA T4", "NVIDIA L4")
+        invalid_inventories = (
+            "",
+            "Tesla V100",
+            "NVIDIA A100",
+            "NVIDIA T4 extra",
+            "Tesla T4\nNVIDIA T4",
+        )
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             self.create_repository(repo, "resolute")
@@ -639,6 +659,29 @@ esac
             invocations,
         )
 
+    def test_gpu_container_inventory_accepts_each_complete_t4_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            for container_gpu_names in ("Tesla T4", "NVIDIA T4"):
+                with self.subTest(container_gpu_names=container_gpu_names):
+                    result, _ = self.run_bootstrap(
+                        "ubuntu-26.04",
+                        repo,
+                        "--install",
+                        arguments=("--gpu", "--cuda-image", self.cuda_image),
+                        gpu_names="NVIDIA T4",
+                        extra_env={
+                            "STACK_BOOTSTRAP_DRY_RUN": "0",
+                            "STACK_FAKE_DAEMON_JSON": (
+                                root / f"daemon-valid-{container_gpu_names}.json"
+                            ).as_posix(),
+                            "STACK_FAKE_CONTAINER_GPU_NAMES": container_gpu_names,
+                        },
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+
     def test_invalid_nvidia_signing_key_fails_before_host_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -694,8 +737,10 @@ esac
             for container_gpu_names in (
                 "",
                 "NVIDIA T4\n",
-                "NVIDIA T4\nNVIDIA T4",
-                "NVIDIA L4",
+                "Tesla V100",
+                "NVIDIA A100",
+                "NVIDIA T4 extra",
+                "Tesla T4\nNVIDIA T4",
             ):
                 with self.subTest(container_gpu_names=container_gpu_names):
                     result, invocations = self.run_bootstrap(
