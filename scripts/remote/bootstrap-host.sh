@@ -176,14 +176,21 @@ if (( gpu_mode == 1 )); then
     : >"$nvidia_toolkit_query_temp"
     if dpkg-query -W -f='${Package}\t${Status}\t${Version}\n' "$package" \
       >"$nvidia_toolkit_query_temp" 2>/dev/null; then
+      query_status=0
+    else
+      query_status=$?
+    fi
+    if (( query_status == 0 )); then
       mapfile -t package_records <"$nvidia_toolkit_query_temp"
       [[ ${#package_records[@]} -eq 1 && -n "${package_records[0]}" ]] ||
         die "NVIDIA container toolkit package state is malformed for $package; repair the official four-package set and retry"
       nvidia_toolkit_records+=("${package_records[0]}")
-    else
+    elif (( query_status == 1 )); then
       [[ ! -s "$nvidia_toolkit_query_temp" ]] ||
         die "NVIDIA container toolkit package state is ambiguous for $package; repair the official four-package set and retry"
       nvidia_toolkit_records+=("$package"$'\t''absent'$'\t''-')
+    else
+      die "NVIDIA container toolkit package query failed for $package with status $query_status; repair dpkg-query and retry"
     fi
   done
   rm -f -- "$nvidia_toolkit_query_temp"

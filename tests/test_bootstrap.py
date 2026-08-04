@@ -140,6 +140,7 @@ case "$name" in
     esac
     [[ -n "${!query_variable+x}" ]] || exit 1
     printf '%s' "${!query_variable}"
+    exit "${STACK_FAKE_DPKG_QUERY_STATUS:-0}"
     ;;
   getent)
     record READ "$@"
@@ -759,6 +760,31 @@ esac
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn("nvidia-ctk", result.stderr)
+        self.assertFalse(
+            [line for line in invocations if line.startswith("MUTATE")], invocations
+        )
+
+    def test_gpu_toolkit_query_operational_error_fails_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={
+                    "STACK_BOOTSTRAP_DRY_RUN": "0",
+                    "STACK_FAKE_DAEMON_JSON": (root / "daemon.json").as_posix(),
+                    "STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT": "",
+                    "STACK_FAKE_DPKG_QUERY_STATUS": "2",
+                },
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("NVIDIA container toolkit package query failed", result.stderr)
         self.assertFalse(
             [line for line in invocations if line.startswith("MUTATE")], invocations
         )
