@@ -261,7 +261,7 @@ esac
     def toolkit_query_environment(self, version: str = "1.17.8-1"):
         return {
             "STACK_FAKE_QUERY_" + package.upper().replace("-", "_"): (
-                f"{package}\tinstall ok installed\t{version}\n"
+                f"{package}\thold ok installed\t{version}\n"
             )
             for package in self.nvidia_toolkit_packages
         }
@@ -680,6 +680,104 @@ esac
                 f"MUTATE docker run --rm --gpus all {self.cuda_image} nvidia-smi --query-gpu=name --format=csv\\,noheader",
                 invocations,
             )
+
+    def test_gpu_toolkit_accepts_healthy_held_and_mixed_statuses_without_package_mutation(self):
+        held = self.toolkit_query_environment()
+        mixed = {
+            **held,
+            "STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT": (
+                "nvidia-container-toolkit\tinstall ok installed\t1.17.8-1\n"
+            ),
+            "STACK_FAKE_QUERY_LIBNVIDIA_CONTAINER_TOOLS": (
+                "libnvidia-container-tools\tinstall ok installed\t1.17.8-1\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            for name, query_environment in {
+                "all held": held,
+                "mixed install and hold": mixed,
+            }.items():
+                with self.subTest(name=name):
+                    result, invocations = self.run_bootstrap(
+                        "ubuntu-26.04",
+                        repo,
+                        "--install",
+                        arguments=("--gpu", "--cuda-image", self.cuda_image),
+                        gpu_names="NVIDIA T4",
+                        extra_env={
+                            "STACK_BOOTSTRAP_DRY_RUN": "0",
+                            "STACK_FAKE_DAEMON_JSON": (
+                                root / f"daemon-{name.replace(' ', '-')}.json"
+                            ).as_posix(),
+                            **query_environment,
+                        },
+                    )
+
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    evidence = "\n".join((*invocations, result.stdout, result.stderr))
+                    self.assertNotIn("apt-mark", evidence)
+                    self.assertNotIn("unhold", evidence)
+                    self.assertNotIn("allow-change-held-packages", evidence)
+                    self.assertFalse(
+                        [
+                            line
+                            for line in invocations
+                            if "apt-get install --yes --no-install-recommends nvidia" in line
+                            or "apt-get install --yes --no-install-recommends libnvidia" in line
+                        ],
+                        invocations,
+                    )
+
+    def test_gpu_toolkit_rejects_unhealthy_exact_status_records_before_mutation(self):
+        coherent = self.toolkit_query_environment()
+        statuses = {
+            "deinstall selection": "deinstall ok installed",
+            "purge selection": "purge ok installed",
+            "unknown selection": "unknown ok installed",
+            "reinstreq error": "install reinstreq installed",
+            "config-files status": "install ok config-files",
+            "missing selection token": "ok installed",
+            "missing error token": "install installed",
+            "missing status token": "install ok",
+            "extra status token": "install ok installed extra",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            for name, status in statuses.items():
+                with self.subTest(name=name):
+                    result, invocations = self.run_bootstrap(
+                        "ubuntu-26.04",
+                        repo,
+                        "--install",
+                        arguments=("--gpu", "--cuda-image", self.cuda_image),
+                        gpu_names="NVIDIA T4",
+                        extra_env={
+                            "STACK_BOOTSTRAP_DRY_RUN": "0",
+                            "STACK_FAKE_DAEMON_JSON": (
+                                root / f"daemon-unhealthy-{name.replace(' ', '-')}.json"
+                            ).as_posix(),
+                            **coherent,
+                            "STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT": (
+                                "nvidia-container-toolkit"
+                                f"\t{status}\t1.17.8-1\n"
+                            ),
+                        },
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(
+                        "NVIDIA container toolkit package state is unsupported",
+                        result.stderr,
+                    )
+                    self.assertFalse(
+                        [line for line in invocations if line.startswith("MUTATE")],
+                        invocations,
+                    )
 
     def test_gpu_toolkit_rejects_ambiguous_package_evidence_before_mutation(self):
         coherent = self.toolkit_query_environment()

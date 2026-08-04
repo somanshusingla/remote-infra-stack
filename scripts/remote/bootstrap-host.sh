@@ -206,7 +206,8 @@ if (( gpu_mode == 1 )); then
     [[ "$query_package" == "${nvidia_toolkit_packages[index]}" &&
        -z "${query_extra:-}" ]] ||
       die "NVIDIA container toolkit package state has an unexpected record; repair the official four-package set and retry"
-    if [[ "$query_status" == "install ok installed" ]]; then
+    if [[ "$query_status" == "install ok installed" ||
+          "$query_status" == "hold ok installed" ]]; then
       [[ -n "$query_version" && "$query_version" =~ ^[^[:space:]]+$ ]] ||
         die "NVIDIA container toolkit package state has an invalid version for $query_package; repair the official four-package set and retry"
       nvidia_toolkit_versions+=("$query_version")
