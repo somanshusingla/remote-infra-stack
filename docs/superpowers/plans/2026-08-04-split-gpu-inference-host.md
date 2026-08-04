@@ -842,6 +842,46 @@ Obtain an independent Task 12 review before Task 8 recreates its detached checko
 
 ---
 
+## Task 13: Bound cold model load separately from warm inference
+
+**Discovery:** Task 8's first inference deployment from approved commit `cd42cab` pulled both models and reached healthy containers, positive host compute VRAM, one model per volume, and GPU device requests. The first non-streaming one-token LLM request connected but returned zero bytes before the hardcoded 120-second limit. Atomic `current` was never created and rollback removed both containers while preserving volumes. The CPU backend remains 2/2 healthy. Offline evidence shows an approximately 8B Q4 model with a 9.61 GB GGUF below the T4's 15,360 MiB capacity, 26.02 GB host RAM available, and zero kernel/Docker OOMs, kills, Xids, segfaults, or nonzero container exits. `ollama show` does not load the model, so this first generation is also the cold-load trigger.
+
+**Files:**
+
+- Modify: `scripts/remote/health.sh`
+- Modify: `tests/test_remote_runtime.py`
+- Modify only if the lifecycle fake needs parity: `tests/test_release_lifecycle.py`
+
+**Contract:** Keep generation bounded and output-silent, but separate the one-time cold-load budget from steady-state acceptance. The first one-token, non-streaming generation may take at most 600 seconds. After it succeeds, require the approved model to be resident with positive VRAM, then issue the same bounded generation again with the original 120-second limit to prove warm inference. The embedding request remains at 120 seconds. Do not expose a free-form timeout environment override, change model/context/parallelism, weaken JSON validation, print response/model data, activate a release before both generations and all existing GPU checks pass, or change rollback behavior.
+
+### Step 1: Add failing cold/warm acceptance tests
+
+Extend the HTTP fake/call assertions to require, in order:
+
+1. LLM generation with `--max-time 600` and the existing one-token payload;
+2. positive approved-model VRAM residency;
+3. a second LLM generation with `--max-time 120` and the same bounded payload;
+4. the existing embedding request with `--max-time 120`.
+
+Add distinct cold-generation and warm-generation failure cases. Prove neither response body is emitted and that either failure makes health nonzero. Capture RED because current code has only one 120-second generation.
+
+### Step 2: Implement one reusable output-silent generation check
+
+Factor the existing request/JSON validation into a small helper taking only the fixed timeout and a non-sensitive phase label. Invoke it at 600 seconds before residency and at 120 seconds after residency. Keep the request payload constructed with `jq`, piped directly, and discarded after strict validation.
+
+### Step 3: Verify, commit, and review
+
+Run focused RED/GREEN under WSL, Bash syntax, the relevant remote-runtime/lifecycle suites, and the unrestricted normal Windows aggregate. Commit only Task 13 files:
+
+```powershell
+git add scripts/remote/health.sh tests/test_remote_runtime.py tests/test_release_lifecycle.py
+git commit -m "fix: allow bounded Ollama cold load"
+```
+
+Obtain an independent Task 13 review before Task 8 recreates its detached checkout and retries the inference-only deployment. Task 8 must reuse the preserved volumes, keep CPU inference live, and repeat the full GPU acceptance gate; it must not tune throughput in this repair.
+
+---
+
 ## Final review and handoff
 
 After Task 8:
