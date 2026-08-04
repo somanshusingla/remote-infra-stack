@@ -109,9 +109,17 @@ STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/tunnel.sh inference
 
 In another terminal, run both Ollama calls shown in [Configure local
 applications](#configure-local-applications). If either fails, leave legacy CPU
-inference running, diagnose or retry the GPU target, and reopen its data tunnel if it
-was closed. Do not cut over. Only after both calls succeed, stop the legacy CPU service
-and open the data tunnel:
+inference running and press `Ctrl+C` in the failed GPU tunnel terminal to release
+`127.0.0.1:11440` and `127.0.0.1:11441`. Then select the data target and reopen the
+legacy path with `inference` (and any required data profiles); do not run `stop
+inference`:
+
+```bash
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb inference
+```
+
+Diagnose or retry the GPU target before another cutover attempt. Only after both calls
+succeed, stop the legacy CPU service and open the data tunnel:
 
 ```bash
 STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop inference
@@ -152,9 +160,18 @@ $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 
 In another window, run both PowerShell Ollama calls shown in [Configure local
 applications](#configure-local-applications). If either fails, leave legacy CPU
-inference running, diagnose or retry the GPU target, and reopen its data tunnel if it
-was closed. Do not cut over. Only after both calls succeed, stop the legacy CPU service
-and open the data tunnel:
+inference running and press `Ctrl+C` in the failed GPU tunnel window to release
+`127.0.0.1:11440` and `127.0.0.1:11441`. Then select the data target and reopen the
+legacy path with `inference` (and any required data profiles); do not run `stop
+inference`:
+
+```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\tunnel.ps1 core vector dynamodb inference
+```
+
+Diagnose or retry the GPU target before another cutover attempt. Only after both calls
+succeed, stop the legacy CPU service and open the data tunnel:
 
 ```powershell
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
@@ -320,10 +337,12 @@ model, so it can be much slower than later deployments. Downloads live in separa
 named volumes. If a pull or deployment is interrupted, run the same deploy command
 again: Ollama resumes/reuses cached layers and the release is activated only after both
 models are ready. Accept the GPU target only after both local Ollama calls succeed
-through its tunnel. If GPU acceptance fails, keep any legacy CPU inference running and
-retry or diagnose the GPU target; do not cut over. Once it succeeds, stop legacy data
-host inference with that target's absolute `STACK_REMOTE_ENV`, while preserving the old
-model volumes. Those old volumes are not a supported fallback.
+through its tunnel. If GPU acceptance fails, keep legacy CPU inference running, close
+the failed GPU tunnel with `Ctrl+C`, and reopen the data-target tunnel with `inference`
+selected after switching `STACK_REMOTE_ENV`; do not cut over or run `stop inference`.
+Once it succeeds, stop legacy data-host inference with that target's absolute
+`STACK_REMOTE_ENV`, while preserving the old model volumes. Those old volumes are not a
+supported fallback.
 
 OpenSearch keeps its security plugin enabled. Sign in as `admin` with
 `OPENSEARCH_INITIAL_ADMIN_PASSWORD`. Its bundled certificate is a development TLS

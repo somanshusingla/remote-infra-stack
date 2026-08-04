@@ -175,10 +175,18 @@ curl http://127.0.0.1:11441/api/embed \
 ```
 
 Only after both calls succeed is the GPU host accepted. If either call fails, leave the
-legacy data-host CPU inference running, diagnose or retry the GPU target, and reopen
-its data tunnel if it was closed. Do not cut over. After acceptance, stop the legacy
-CPU service without removing its model volumes, then open the data tunnel in a second
-terminal:
+legacy data-host CPU inference running and press `Ctrl+C` in the failed GPU tunnel
+terminal to release `127.0.0.1:11440` and `127.0.0.1:11441`. Then select the data
+target and reopen the legacy path with `inference` (and any required data profiles); do
+not cut over or run `stop inference`:
+
+```bash
+STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/tunnel.sh core vector dynamodb inference
+```
+
+Diagnose or retry the GPU target before another cutover attempt. After acceptance, stop
+the legacy CPU service without removing its model volumes, then open the data tunnel in
+a second terminal:
 
 ```bash
 STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/stack.sh stop inference
@@ -330,10 +338,19 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:11441/api/embed' -ContentT
 ```
 
 Only after both calls succeed is the GPU host accepted. If either call fails, leave the
-legacy data-host CPU inference running, diagnose or retry the GPU target, and reopen
-its data tunnel if it was closed. Do not cut over. After acceptance, stop the legacy
-CPU service without removing its model volumes, then open the data tunnel in a second
-PowerShell window:
+legacy data-host CPU inference running and press `Ctrl+C` in the failed GPU tunnel
+window to release `127.0.0.1:11440` and `127.0.0.1:11441`. Then select the data target
+and reopen the legacy path with `inference` (and any required data profiles); do not
+cut over or run `stop inference`:
+
+```powershell
+$env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
+.\scripts\tunnel.ps1 core vector dynamodb inference
+```
+
+Diagnose or retry the GPU target before another cutover attempt. After acceptance, stop
+the legacy CPU service without removing its model volumes, then open the data tunnel in
+a second PowerShell window:
 
 ```powershell
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
