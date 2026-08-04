@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-08-02T00:00:00Z",
-  "verification_method": "remote docker buildx imagetools inspect and inspect --raw",
+  "verified_at": "2026-08-04T00:00:00Z",
+  "verification_method": "remote docker buildx imagetools inspect, inspect --raw, and linux/amd64 child manifest inspection",
   "images": {
     "APP_POSTGRES_IMAGE": {
       "reference": "docker.io/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
@@ -86,6 +86,11 @@
     "OLLAMA_IMAGE": {
       "reference": "docker.io/ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131",
       "kind": "manifest-list",
+      "verified_platforms": ["linux/amd64"]
+    },
+    "NVIDIA_CUDA_IMAGE": {
+      "reference": "docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:5d2e53778e2180e01676aa8bac1aada242e95230ec97e21ecfb33de4e27cd1df",
+      "kind": "manifest",
       "verified_platforms": ["linux/amd64"]
     }
   }

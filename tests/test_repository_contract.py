@@ -53,10 +53,10 @@ class RepositoryContractTests(unittest.TestCase):
         verified_images = inventory["images"]
         images = {key: value for key, value in versions.items() if key.endswith("_IMAGE")}
 
-        self.assertEqual(17, len(images))
+        self.assertEqual(18, len(images))
         self.assertEqual("gemma4:e4b", versions["OLLAMA_LLM_MODEL"])
         self.assertEqual("embeddinggemma:300m", versions["OLLAMA_EMBEDDING_MODEL"])
-        self.assertEqual(17, len(verified_images))
+        self.assertEqual(18, len(verified_images))
         self.assertEqual(
             {name: record["reference"] for name, record in verified_images.items()},
             images,
@@ -67,8 +67,20 @@ class RepositoryContractTests(unittest.TestCase):
                 record["reference"],
                 r"^[a-z0-9.-]+(?:/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$",
             )
-            self.assertEqual("manifest-list", record["kind"], name)
+            self.assertIn(record["kind"], {"manifest", "manifest-list"}, name)
             self.assertEqual(["linux/amd64"], record["verified_platforms"], name)
+            if name == "NVIDIA_CUDA_IMAGE":
+                self.assertEqual("manifest", record["kind"])
+                self.assertRegex(
+                    record["reference"],
+                    r"nvidia/cuda:12\.9\.1-base-ubuntu24\.04@sha256:",
+                )
+                self.assertNotIn(":latest@", record["reference"])
+
+        self.assertNotIn(
+            "NVIDIA_CUDA_IMAGE",
+            repo_path("compose.yaml").read_text(encoding="utf-8"),
+        )
 
     def test_chroma_admin_is_vendored_and_built_from_pinned_inputs(self):
         upstream = repo_path("vendor/chromadb-admin/UPSTREAM.md").read_text(encoding="utf-8")
