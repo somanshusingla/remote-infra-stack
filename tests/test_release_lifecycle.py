@@ -39,6 +39,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
         self.env_counter = 0
         self.log = self.root / "docker.log"
         self.sysctl_log = self.root / "sysctl.log"
+        self.nvidia_log = self.root / "nvidia.log"
         self.fake_sysctl = self.root / "sysctl"
         self.fake_sysctl.write_text(
             """#!/usr/bin/env bash
@@ -54,14 +55,25 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
             encoding="utf-8",
         )
         self.fake_sysctl.chmod(0o755)
+        self.fake_df = self.root / "df"
+        self.fake_df.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf 'Avail\\n32212254720\\n'\n",
+            encoding="ascii",
+        )
+        self.fake_df.chmod(0o755)
         self.env = {
             **os.environ,
             "PATH": f"{shell_path(repo_path('tests/fakes'))}{os.pathsep}{os.environ.get('PATH', '')}",
             "DOCKER_BIN": shell_path(repo_path("tests/fakes/docker")),
             "CURL_BIN": shell_path(repo_path("tests/fakes/docker")),
             "SYSCTL_BIN": shell_path(self.fake_sysctl),
+            "DF_BIN": shell_path(self.fake_df),
+            "NVIDIA_SMI_BIN": shell_path(repo_path("tests/fakes/nvidia-smi")),
             "STACK_DOCKER_LOG": shell_path(self.log),
             "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
+            "STACK_NVIDIA_LOG": shell_path(self.nvidia_log),
         }
 
     def tearDown(self):
@@ -423,6 +435,69 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
         failed = self.root / "releases" / name
         self.assertTrue((failed / ".release-digest").is_file())
         self.assertFalse((failed / ".successful").exists())
+
+    def test_each_inference_health_failure_preserves_current_and_ollama_volumes(self):
+        cases = (
+            ("chat", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "generate"}, "/api/generate"),
+            ("embed", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "embed"}, "/api/embed"),
+            ("json", {"STACK_FAKE_GENERATE_RESPONSE": "not-json"}, "/api/generate"),
+            ("model", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[]}'}, "11440/api/ps"),
+            ("vram", {"STACK_FAKE_EMBEDDING_PS_RESPONSE": '{"models":[{"name":"embeddinggemma:300m","size_vram":0}]}'}, "11441/api/ps"),
+            ("llm-device", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_LLM": "[]"}, "container-ollama-llm"),
+            ("embedding-device", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_EMBEDDING": "[]"}, "container-ollama-embedding"),
+            ("host-memory", {"STACK_FAKE_COMPUTE_MEMORY": "0"}, "/api/embed"),
+        )
+        original_root = self.root
+        original_log = self.log
+        try:
+            for index, (label, failure_env, reached_boundary) in enumerate(cases):
+                with self.subTest(label=label):
+                    case_root = original_root / f"inference-health-{label}"
+                    for child in ("incoming", "runtime", "releases"):
+                        (case_root / child).mkdir(parents=True)
+                    write_test_env(case_root / "runtime/.env")
+                    self.root = case_root
+                    self.log = case_root / "docker.log"
+                    prior_name = f"20260802T01{index:02d}00Z-prior"
+                    self.install_prior_release(prior_name)
+                    volume_state = case_root / "ollama-volumes.state"
+                    volume_state.write_text(
+                        "ollama-llm\nollama-embedding\n", encoding="ascii"
+                    )
+                    archive, checksum, name = self.make_archive(
+                        f"20260802T13{index:02d}00Z-{label}"
+                    )
+
+                    result = self.deploy(
+                        archive, checksum, "inference",
+                        STACK_DOCKER_LOG=shell_path(self.log),
+                        STACK_NVIDIA_LOG=shell_path(case_root / "nvidia.log"),
+                        **failure_env,
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    rendered_calls = "\n".join(
+                        " ".join(call) for call in self.docker_calls()
+                    )
+                    self.assertIn(reached_boundary, rendered_calls, result.stderr)
+                    self.assertEqual(
+                        f"releases/{prior_name}", os.readlink(case_root / "current")
+                    )
+                    self.assertEqual(
+                        "ollama-llm\nollama-embedding\n",
+                        volume_state.read_text(encoding="ascii"),
+                    )
+                    cleanup = self.compose_calls("rm")
+                    self.assertEqual(1, len(cleanup))
+                    self.assertNotIn("-v", cleanup[0])
+                    self.assertNotIn("--volumes", cleanup[0])
+                    self.assertFalse(any("volume" in call for call in self.docker_calls()))
+                    failed = case_root / "releases" / name
+                    self.assertTrue((failed / ".release-digest").is_file())
+                    self.assertFalse((failed / ".successful").exists())
+        finally:
+            self.root = original_root
+            self.log = original_log
 
     def test_failed_upgrade_restores_previous_runtime_env_and_selected_services(self):
         prior = self.install_prior_release("20260802T010000Z-prior")

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${STACK_NVIDIA_LOG:-}" ]]; then
+  {
+    printf 'nvidia-smi'
+    printf ' %q' "$@"
+    printf '\n'
+  } >>"$STACK_NVIDIA_LOG"
+fi
+
+[[ "${STACK_FAKE_NVIDIA_STATUS:-0}" == 0 ]] || exit "$STACK_FAKE_NVIDIA_STATUS"
+if [[ "$*" == "--query-compute-apps=used_gpu_memory --format=csv,noheader,nounits" ]]; then
+  printf '%s\n' "${STACK_FAKE_COMPUTE_MEMORY-1024}"
+else
+  printf '%s\n' "${STACK_FAKE_HOST_GPU_NAMES-NVIDIA T4}"
+fi

@@ -10,6 +10,78 @@ if [[ -n "${STACK_DOCKER_LOG:-}" ]]; then
 fi
 
 joined=" $* "
+arguments=("$@")
+last_argument=${arguments[$((${#arguments[@]} - 1))]:-}
+if [[ "$1" == --fail ]]; then
+  request_body=
+  if [[ "$joined" == *" --data-binary @- "* ]]; then
+    request_body=$(cat)
+    if [[ -n "${STACK_FAKE_HTTP_BODY_LOG:-}" ]]; then
+      printf '%s\n' "$request_body" >>"$STACK_FAKE_HTTP_BODY_LOG"
+    fi
+  fi
+  if [[ -n "${STACK_FAKE_FAIL_HTTP_URL:-}" && "$last_argument" == "$STACK_FAKE_FAIL_HTTP_URL" ]]; then
+    exit 46
+  fi
+  case "$last_argument" in
+    http://127.0.0.1:11440/api/generate)
+      [[ "${STACK_FAKE_FAIL_OLLAMA_REQUEST:-}" != generate ]] || exit 48
+      if [[ -n "${STACK_FAKE_GENERATE_RESPONSE+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_GENERATE_RESPONSE"
+      else
+        printf '%s\n' '{"model":"gemma4:e4b","response":"generated-health-secret","done":true}'
+      fi
+      ;;
+    http://127.0.0.1:11441/api/embed)
+      [[ "${STACK_FAKE_FAIL_OLLAMA_REQUEST:-}" != embed ]] || exit 49
+      if [[ -n "${STACK_FAKE_EMBED_RESPONSE+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_EMBED_RESPONSE"
+      else
+        printf '%s\n' '{"model":"embeddinggemma:300m","embeddings":[[0.125]]}'
+      fi
+      ;;
+    http://127.0.0.1:11440/api/ps)
+      if [[ -n "${STACK_FAKE_LLM_PS_RESPONSE+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_LLM_PS_RESPONSE"
+      else
+        printf '%s\n' '{"models":[{"name":"gemma4:e4b","model":"gemma4:e4b","size_vram":1024}]}'
+      fi
+      ;;
+    http://127.0.0.1:11441/api/ps)
+      if [[ -n "${STACK_FAKE_EMBEDDING_PS_RESPONSE+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_EMBEDDING_PS_RESPONSE"
+      else
+        printf '%s\n' '{"models":[{"name":"embeddinggemma:300m","model":"embeddinggemma:300m","size_vram":256}]}'
+      fi
+      ;;
+  esac
+  exit 0
+fi
+if (($# == 8)) && [[ "$1" == run && "$2" == --rm && "$3" == --gpus && "$4" == all && "$6" == nvidia-smi && "$7" == --query-gpu=name && "$8" == --format=csv,noheader ]]; then
+  [[ "${STACK_FAKE_CONTAINER_GPU_STATUS:-0}" == 0 ]] || exit "$STACK_FAKE_CONTAINER_GPU_STATUS"
+  printf '%s\n' "${STACK_FAKE_CONTAINER_GPU_NAMES-NVIDIA T4}"
+  exit 0
+fi
+if (($# == 4)) && [[ "$1" == inspect && "$2" == --format && "$3" == '{{json .HostConfig.DeviceRequests}}' ]]; then
+  case "$4" in
+    container-ollama-llm)
+      if [[ -n "${STACK_FAKE_DEVICE_REQUEST_OLLAMA_LLM+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_DEVICE_REQUEST_OLLAMA_LLM"
+      else
+        printf '%s\n' '[{"Driver":"nvidia","Count":-1,"DeviceIDs":null,"Capabilities":[["gpu"]]}]'
+      fi
+      ;;
+    container-ollama-embedding)
+      if [[ -n "${STACK_FAKE_DEVICE_REQUEST_OLLAMA_EMBEDDING+x}" ]]; then
+        printf '%s\n' "$STACK_FAKE_DEVICE_REQUEST_OLLAMA_EMBEDDING"
+      else
+        printf '%s\n' '[{"Driver":"nvidia","Count":-1,"DeviceIDs":null,"Capabilities":[["gpu"]]}]'
+      fi
+      ;;
+    *) exit 51 ;;
+  esac
+  exit 0
+fi
 if (($# == 3)) && [[ "$1" == info && "$2" == --format && "$3" == '{{.DockerRootDir}}' ]]; then
   [[ -z "${STACK_FAKE_DOCKER_INFO_ERROR:-}" ]] || exit 45
   if [[ -n "${STACK_FAKE_DOCKER_ROOT_DIR+x}" ]]; then
@@ -25,8 +97,6 @@ fi
 project_directory=
 compose_file=
 versions_file=
-arguments=("$@")
-last_argument=${arguments[$((${#arguments[@]} - 1))]:-}
 if [[ -n "${STACK_FAKE_FAIL_HTTP_URL:-}" && "$1" != compose && "$last_argument" == "$STACK_FAKE_FAIL_HTTP_URL" ]]; then
   exit 46
 fi
@@ -127,4 +197,10 @@ if [[ "$joined" == *" ps "* && "$joined" == *" --format json "* ]]; then
 [{"Service":"app-postgres","State":"running","Health":"healthy"},{"Service":"app-redis","State":"running","Health":"healthy"},{"Service":"chroma","State":"running","Health":"healthy"},{"Service":"chroma-admin","State":"running","Health":"healthy"},{"Service":"dynamodb-local","State":"running","Health":"healthy"},{"Service":"dynamodb-admin","State":"running","Health":"healthy"},{"Service":"ollama-llm","State":"running","Health":"healthy"},{"Service":"ollama-embedding","State":"running","Health":"healthy"},{"Service":"opensearch","State":"running","Health":"healthy"},{"Service":"opensearch-dashboards","State":"running","Health":"healthy"},{"Service":"langfuse-postgres","State":"running","Health":"healthy"},{"Service":"langfuse-redis","State":"running","Health":"healthy"},{"Service":"clickhouse","State":"running","Health":"healthy"},{"Service":"minio","State":"running","Health":"healthy"},{"Service":"langfuse-worker","State":"running","Health":"healthy"},{"Service":"langfuse-web","State":"running","Health":"healthy"},{"Service":"pgadmin","State":"running","Health":"healthy"},{"Service":"redisinsight","State":"running","Health":"healthy"}]
 JSON
   fi
+fi
+
+if [[ "$joined" == *" ps --quiet ollama-llm "* ]]; then
+  printf '%s\n' container-ollama-llm
+elif [[ "$joined" == *" ps --quiet ollama-embedding "* ]]; then
+  printf '%s\n' container-ollama-embedding
 fi

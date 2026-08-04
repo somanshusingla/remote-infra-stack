@@ -42,6 +42,8 @@ class RemoteRuntimeTests(unittest.TestCase):
         self.log = self.root / "docker.log"
         self.df_log = self.root / "df.log"
         self.sysctl_log = self.root / "sysctl.log"
+        self.nvidia_log = self.root / "nvidia.log"
+        self.http_body_log = self.root / "http-bodies.log"
         self.fake_sysctl = self.root / "sysctl"
         self.fake_sysctl.write_text(
             """#!/usr/bin/env bash
@@ -95,8 +97,11 @@ printf 'Avail\\n%s\\n' "$available"
             "JQ_BIN": shell_path(repo_path("tests/fakes/jq")),
             "FREE_BIN": shell_path(self.fake_free),
             "SYSCTL_BIN": shell_path(self.fake_sysctl),
+            "NVIDIA_SMI_BIN": shell_path(repo_path("tests/fakes/nvidia-smi")),
             "STACK_DOCKER_LOG": shell_path(self.log),
             "STACK_SYSCTL_LOG": shell_path(self.sysctl_log),
+            "STACK_NVIDIA_LOG": shell_path(self.nvidia_log),
+            "STACK_FAKE_HTTP_BODY_LOG": shell_path(self.http_body_log),
         }
 
     def tearDown(self):
@@ -109,6 +114,8 @@ printf 'Avail\\n%s\\n' "$available"
         )
 
     def docker_calls(self):
+        if not self.log.exists():
+            return []
         return [shlex.split(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
 
     def capacity_env(self):
@@ -125,6 +132,22 @@ printf 'Avail\\n%s\\n' "$available"
         return [
             shlex.split(line)
             for line in self.sysctl_log.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def nvidia_calls(self):
+        if not self.nvidia_log.exists():
+            return []
+        return [
+            shlex.split(line)
+            for line in self.nvidia_log.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def http_bodies(self):
+        if not self.http_body_log.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.http_body_log.read_text(encoding="utf-8").splitlines()
         ]
 
     def test_compose_builds_canonical_command_with_ordered_profiles(self):
@@ -370,8 +393,8 @@ printf 'Avail\\n%s\\n' "$available"
         combined = result.stdout + result.stderr + self.log.read_text(encoding="utf-8")
         self.assertNotIn(secret, combined)
 
-    def test_health_checks_new_uis_dynamodb_and_exact_ollama_models(self):
-        result = self.run_script("health.sh", "vector", "dynamodb", "inference")
+    def test_health_checks_new_uis_and_dynamodb(self):
+        result = self.run_script("health.sh", "vector", "dynamodb")
         self.assertEqual(0, result.returncode, result.stderr)
         calls = self.docker_calls()
         http_calls = [call for call in calls if "--max-time" in call]
@@ -380,8 +403,6 @@ printf 'Avail\\n%s\\n' "$available"
                 "http://127.0.0.1:18000/api/v2/heartbeat",
                 "http://127.0.0.1:18001",
                 "http://127.0.0.1:18003",
-                "http://127.0.0.1:11440/api/version",
-                "http://127.0.0.1:11441/api/version",
             ],
             [call[-1] for call in http_calls],
         )
@@ -399,29 +420,111 @@ printf 'Avail\\n%s\\n' "$available"
         self.assertEqual(
             [
                 ["dynamodb-admin", "node", "-e", dynamodb_script],
-                ["ollama-llm", "/bin/sh", "-c", 'exec /bin/ollama show "$OLLAMA_MODEL"'],
-                ["ollama-embedding", "/bin/sh", "-c", 'exec /bin/ollama show "$OLLAMA_MODEL"'],
             ],
             exec_calls,
         )
 
-    def test_health_never_runs_generate_or_embed(self):
+    def test_health_proves_bounded_inference_requests_gpu_residency_and_device_requests(self):
         result = self.run_script("health.sh", "inference")
+
         self.assertEqual(0, result.returncode, result.stderr)
-        captured = "\n".join(" ".join(call) for call in self.docker_calls()).lower()
-        for forbidden in (
-            "/api/generate", "/api/chat", "/api/embed", "/api/embeddings",
-            "ollama run", "ollama embed",
+        self.assertEqual([
+            {
+                "model": "gemma4:e4b", "prompt": "healthcheck", "stream": False,
+                "options": {"num_predict": 1}, "keep_alive": "5m",
+            },
+            {
+                "model": "embeddinggemma:300m", "input": "healthcheck",
+                "keep_alive": "5m",
+            },
+        ], self.http_bodies())
+        calls = self.docker_calls()
+        expected_post_prefix = [
+            "docker", "--fail", "--silent", "--show-error", "--max-time", "120",
+            "--header", "Content-Type: application/json", "--data-binary", "@-",
+        ]
+        self.assertIn(
+            expected_post_prefix + ["http://127.0.0.1:11440/api/generate"], calls
+        )
+        self.assertIn(
+            expected_post_prefix + ["http://127.0.0.1:11441/api/embed"], calls
+        )
+        for endpoint in (
+            "http://127.0.0.1:11440/api/ps",
+            "http://127.0.0.1:11441/api/ps",
         ):
-            self.assertNotIn(forbidden, captured)
+            self.assertIn(endpoint, [call[-1] for call in calls])
+        self.assertIn(["docker", "inspect", "--format", "{{json .HostConfig.DeviceRequests}}", "container-ollama-llm"], calls)
+        self.assertIn(["docker", "inspect", "--format", "{{json .HostConfig.DeviceRequests}}", "container-ollama-embedding"], calls)
+        self.assertTrue(any("ps" in call and "--quiet" in call and "ollama-llm" in call for call in calls))
+        self.assertTrue(any("ps" in call and "--quiet" in call and "ollama-embedding" in call for call in calls))
+        self.assertEqual([
+            [
+                "nvidia-smi", "--query-compute-apps=used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            ]
+        ], self.nvidia_calls())
+        captured = result.stdout + result.stderr + self.log.read_text(encoding="utf-8")
+        self.assertNotIn("generated-health-secret", captured)
+        self.assertNotIn("0.125", captured)
+
+    def test_health_rejects_each_inference_execution_failure(self):
+        cases = (
+            ("chat-failure", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "generate"}),
+            ("embedding-failure", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "embed"}),
+            ("invalid-json", {"STACK_FAKE_GENERATE_RESPONSE": "not-json"}),
+            ("missing-model", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[]}'}),
+            ("zero-vram", {"STACK_FAKE_EMBEDDING_PS_RESPONSE": '{"models":[{"name":"embeddinggemma:300m","size_vram":0}]}'}),
+            ("llm-device-request", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_LLM": "[]"}),
+            ("embedding-device-request", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_EMBEDDING": "[]"}),
+            ("zero-host-memory", {"STACK_FAKE_COMPUTE_MEMORY": "0"}),
+        )
+        for label, env in cases:
+            with self.subTest(label=label):
+                self.log.unlink(missing_ok=True)
+                self.nvidia_log.unlink(missing_ok=True)
+                self.http_body_log.unlink(missing_ok=True)
+
+                result = self.run_script("health.sh", "inference", **env)
+
+                self.assertNotEqual(0, result.returncode)
+                captured = result.stdout + result.stderr
+                self.assertNotIn("generated-health-secret", captured)
+                self.assertNotIn("0.125", captured)
+
+    def test_health_loads_strict_model_pins_without_evaluating_versions_env(self):
+        marker = self.root / "health-parser-must-not-run"
+        valid = (
+            "OLLAMA_LLM_MODEL=gemma4:e4b\n"
+            "OLLAMA_EMBEDDING_MODEL=embeddinggemma:300m\n"
+        )
+        cases = {
+            "missing": "OLLAMA_LLM_MODEL=gemma4:e4b\n",
+            "quoted": 'OLLAMA_LLM_MODEL="gemma4:e4b"\nOLLAMA_EMBEDDING_MODEL=embeddinggemma:300m\n',
+            "duplicate": valid + "OLLAMA_LLM_MODEL=gemma4:e4b\n",
+            "shell-syntax": f"OLLAMA_LLM_MODEL=$(touch {shell_path(marker)})\nOLLAMA_EMBEDDING_MODEL=embeddinggemma:300m\n",
+        }
+        for label, content in cases.items():
+            with self.subTest(label=label):
+                self.log.unlink(missing_ok=True)
+                versions = self.root / f"versions-{label}.env"
+                versions.write_text(content, encoding="utf-8")
+
+                result = self.run_script(
+                    "health.sh", "inference",
+                    STACK_VERSIONS_ENV_FILE=shell_path(versions),
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("OLLAMA_", result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse(any("/api/generate" in call for call in self.docker_calls()))
 
     def test_health_propagates_each_new_endpoint_and_protocol_failure(self):
         profile_by_url = {
             "http://127.0.0.1:18000/api/v2/heartbeat": "vector",
             "http://127.0.0.1:18001": "vector",
             "http://127.0.0.1:18003": "dynamodb",
-            "http://127.0.0.1:11440/api/version": "inference",
-            "http://127.0.0.1:11441/api/version": "inference",
         }
         for endpoint, profile in profile_by_url.items():
             with self.subTest(endpoint=endpoint):
@@ -436,11 +539,6 @@ printf 'Avail\\n%s\\n' "$available"
 
         for failure_env, profile, service in (
             ({"STACK_FAKE_FAIL_DYNAMODB": "1"}, "dynamodb", "dynamodb-admin"),
-            ({"STACK_FAKE_FAIL_OLLAMA_SERVICE": "ollama-llm"}, "inference", "ollama-llm"),
-            (
-                {"STACK_FAKE_FAIL_OLLAMA_SERVICE": "ollama-embedding"},
-                "inference", "ollama-embedding",
-            ),
         ):
             with self.subTest(failure=failure_env):
                 self.log.unlink(missing_ok=True)
@@ -540,7 +638,7 @@ printf 'Avail\\n%s\\n' "$available"
         )
         self.assertEqual(
             ["docker", "info", "--format", "{{.DockerRootDir}}"],
-            self.docker_calls()[0],
+            next(call for call in self.docker_calls() if "info" in call),
         )
         self.assertEqual(
             [
@@ -662,11 +760,86 @@ printf 'Avail\\n%s\\n' "$available"
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn(message, result.stderr)
 
-    def test_preflight_skips_docker_info_without_inference(self):
+    def test_preflight_skips_docker_and_host_gpu_checks_without_inference(self):
         result = self.run_script("preflight.sh", "core", **self.capacity_env())
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotIn("info", [argument for call in self.docker_calls() for argument in call])
+        self.assertNotIn("run", [argument for call in self.docker_calls() for argument in call])
+        self.assertEqual([], self.nvidia_calls())
         self.assertEqual(1, len(self.df_calls()))
+
+    def test_preflight_requires_exact_host_and_pinned_container_t4_before_compose(self):
+        result = self.run_script("preflight.sh", "inference", **self.capacity_env())
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]],
+            self.nvidia_calls(),
+        )
+        calls = self.docker_calls()
+        container_validation = [
+            "docker", "run", "--rm", "--gpus", "all",
+            "docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:5d2e53778e2180e01676aa8bac1aada242e95230ec97e21ecfb33de4e27cd1df",
+            "nvidia-smi", "--query-gpu=name", "--format=csv,noheader",
+        ]
+        self.assertIn(container_validation, calls)
+        self.assertLess(calls.index(container_validation), next(
+            index for index, call in enumerate(calls) if "config" in call
+        ))
+
+    def test_preflight_rejects_missing_or_malformed_cuda_pin_before_compose(self):
+        marker = self.root / "gpu-parser-must-not-run"
+        valid_pin = (
+            "NVIDIA_CUDA_IMAGE=docker.io/nvidia/cuda:12.9.1-base-ubuntu24.04@sha256:"
+            + "5d2e53778e2180e01676aa8bac1aada242e95230ec97e21ecfb33de4e27cd1df"
+        )
+        cases = {
+            "missing": "OLLAMA_LLM_MODEL=gemma4:e4b\n",
+            "quoted": f'NVIDIA_CUDA_IMAGE="{valid_pin.split("=", 1)[1]}"\n',
+            "duplicate": f"{valid_pin}\n{valid_pin}\n",
+            "shell-syntax": f"NVIDIA_CUDA_IMAGE=$(touch {shell_path(marker)})\n",
+        }
+        for label, content in cases.items():
+            with self.subTest(label=label):
+                self.log.unlink(missing_ok=True)
+                self.nvidia_log.unlink(missing_ok=True)
+                release = self.root / f"release-{label}"
+                release.mkdir()
+                (release / "versions.env").write_text(content, encoding="utf-8")
+
+                result = self.run_script(
+                    "preflight.sh", "inference", **self.capacity_env(),
+                    STACK_RELEASE_DIR=shell_path(release),
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("NVIDIA_CUDA_IMAGE", result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse(any("config" in call for call in self.docker_calls()))
+
+    def test_preflight_rejects_wrong_or_failed_host_and_container_gpu_before_compose(self):
+        cases = (
+            ({"STACK_FAKE_HOST_GPU_NAMES": ""}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA A100"}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4\nNVIDIA T4"}, "host"),
+            ({"STACK_FAKE_NVIDIA_STATUS": "7"}, "host"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": ""}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA A100"}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4\nNVIDIA T4"}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_STATUS": "8"}, "container"),
+        )
+        for env, boundary in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                self.nvidia_log.unlink(missing_ok=True)
+
+                result = self.run_script(
+                    "preflight.sh", "inference", **self.capacity_env(), **env
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(boundary, result.stderr.lower())
+                self.assertFalse(any("config" in call for call in self.docker_calls()))
 
     def test_preflight_honors_compose_override_for_held_release_inputs(self):
         compose_log = self.root / "compose-override.log"

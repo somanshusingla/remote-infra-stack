@@ -10,6 +10,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 release_dir=${STACK_RELEASE_DIR:-$(cd -- "$script_dir/../.." && pwd -P)}
 stack_root=${STACK_ROOT:-$(cd -- "$release_dir/../.." && pwd -P)}
 compose_script=${STACK_COMPOSE_SCRIPT:-$script_dir/compose.sh}
+versions_env=${STACK_VERSIONS_ENV_FILE:-$release_dir/versions.env}
 
 profile_services() {
   case "$1" in
@@ -43,6 +44,7 @@ compose() {
 df_bin=${DF_BIN:-df}
 jq_bin=${JQ_BIN:-jq}
 docker_bin=${DOCKER_BIN:-docker}
+nvidia_smi_bin=${NVIDIA_SMI_BIN:-nvidia-smi}
 sysctl_bin=${SYSCTL_BIN:-sysctl}
 meminfo_file=${MEMINFO_FILE:-/proc/meminfo}
 command -v "$jq_bin" >/dev/null 2>&1 || die "required command is unavailable: jq"
@@ -63,6 +65,31 @@ elif (( free_bytes < 20 * 1024 * 1024 * 1024 )); then
 fi
 
 if [[ -n "${selected[inference]+x}" ]]; then
+  cuda_image=$(awk -v wanted=NVIDIA_CUDA_IMAGE '
+    index($0, wanted "=") == 1 {
+      count++
+      value = substr($0, length(wanted) + 2)
+      if (value !~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]*@sha256:[a-f0-9]{64}$/) invalid=1
+    }
+    END {
+      if (count != 1 || invalid) exit 1
+      print value
+    }
+  ' "$versions_env" 2>/dev/null) ||
+    die "NVIDIA_CUDA_IMAGE is missing or malformed in versions.env"
+
+  host_gpu_output=$("$nvidia_smi_bin" \
+    --query-gpu=name --format=csv,noheader 2>/dev/null) ||
+    die "host GPU validation failed"
+  [[ "$host_gpu_output" == "NVIDIA T4" ]] ||
+    die "host GPU validation requires exactly one NVIDIA T4"
+
+  container_gpu_output=$("$docker_bin" run --rm --gpus all "$cuda_image" \
+    nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) ||
+    die "container GPU validation failed"
+  [[ "$container_gpu_output" == "NVIDIA T4" ]] ||
+    die "container GPU validation requires exactly one NVIDIA T4"
+
   docker_root=$("$docker_bin" info --format '{{.DockerRootDir}}' 2>/dev/null) ||
     die "could not determine Docker storage root"
   [[ -n "$docker_root" && "$docker_root" != *$'\n'* ]] ||

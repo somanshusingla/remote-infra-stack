@@ -6,6 +6,7 @@ import sys
 
 arguments = sys.argv[1:]
 payload = sys.stdin.read()
+filter_expression = arguments[-1] if arguments else ""
 
 if "-s" in arguments:
     values = []
@@ -18,18 +19,49 @@ if "-s" in arguments:
     print(json.dumps(values, separators=(",", ":")))
     raise SystemExit(0)
 
+if "-n" in arguments:
+    index = arguments.index("--arg")
+    if arguments[index + 1] != "model":
+        raise SystemExit(2)
+    model = arguments[index + 2]
+    if "num_predict" in filter_expression:
+        print(json.dumps({
+            "model": model,
+            "prompt": "healthcheck",
+            "stream": False,
+            "options": {"num_predict": 1},
+            "keep_alive": "5m",
+        }, separators=(",", ":")))
+    elif "input" in filter_expression:
+        print(json.dumps({
+            "model": model,
+            "input": "healthcheck",
+            "keep_alive": "5m",
+        }, separators=(",", ":")))
+    else:
+        raise SystemExit(2)
+    raise SystemExit(0)
+
 if "--arg" in arguments:
     index = arguments.index("--arg")
-    if arguments[index + 1] != "service":
-        raise SystemExit(2)
-    service = arguments[index + 2]
     values = json.loads(payload)
-    matching = [item for item in values if item.get("Service") == service]
-    healthy = bool(matching) and all(
-        item.get("State") == "running" and item.get("Health") == "healthy"
-        for item in matching
-    )
-    raise SystemExit(0 if healthy else 1)
+    if arguments[index + 1] == "service":
+        service = arguments[index + 2]
+        matching = [item for item in values if item.get("Service") == service]
+        healthy = bool(matching) and all(
+            item.get("State") == "running" and item.get("Health") == "healthy"
+            for item in matching
+        )
+        raise SystemExit(0 if healthy else 1)
+    if arguments[index + 1] == "model":
+        model = arguments[index + 2]
+        resident = any(
+            (item.get("name") == model or item.get("model") == model)
+            and float(item.get("size_vram", 0)) > 0
+            for item in values.get("models", [])
+        )
+        raise SystemExit(0 if resident else 1)
+    raise SystemExit(2)
 
 if "--args" in arguments:
     index = arguments.index("--args")
@@ -50,5 +82,29 @@ if "--args" in arguments:
         )
     )
     raise SystemExit(0)
+
+if "DeviceRequests" in filter_expression or "Capabilities" in filter_expression:
+    requests = json.loads(payload)
+    valid = any(
+        item.get("Driver") == "nvidia"
+        and item.get("Count") == -1
+        and any("gpu" in capabilities for capabilities in item.get("Capabilities", []))
+        for item in requests
+    )
+    raise SystemExit(0 if valid else 1)
+
+if "embeddings" in filter_expression:
+    response = json.loads(payload)
+    valid = isinstance(response, dict) and isinstance(response.get("embeddings"), list)
+    raise SystemExit(0 if valid else 1)
+
+if "response" in filter_expression:
+    response = json.loads(payload)
+    valid = (
+        isinstance(response, dict)
+        and isinstance(response.get("response"), str)
+        and response.get("done") is True
+    )
+    raise SystemExit(0 if valid else 1)
 
 raise SystemExit(2)
