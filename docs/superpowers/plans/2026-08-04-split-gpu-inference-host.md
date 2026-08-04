@@ -759,6 +759,57 @@ Task 8 then removes or recreates its old detached deployment checkout at this ne
 
 ---
 
+## Task 11: Preserve a coherent vendor-held NVIDIA toolkit
+
+**Discovery:** Task 8's second live bootstrap passed the T4 guard and installed Docker, then APT refused to upgrade `nvidia-container-toolkit`. The Deep Learning VM coherently preinstalls and holds `nvidia-container-toolkit`, `nvidia-container-toolkit-base`, `libnvidia-container-tools`, and `libnvidia-container1` at `1.17.8-1`; the stable repository advertises all four at `1.19.1-1`. Our top-level-only install selected the newer toolkit while APT correctly retained its held dependencies. No NVIDIA package, runtime configuration, deployment, cutover, tunnel, or Spot action occurred.
+
+**Files:**
+
+- Modify: `scripts/remote/bootstrap-host.sh`
+- Modify: `tests/test_bootstrap.py`
+
+**Contract:** Before any host mutation in GPU install mode, classify the official four-package toolkit set. If all four packages are installed at one identical nonempty version and `nvidia-ctk` exists, preserve that vendor-managed set and skip package installation without changing APT holds. If none are installed, install all four packages together from the validated stable repository. If the set is partial, version-skewed, malformed, or lacks `nvidia-ctk`, fail before mutation with an actionable error. Never run `apt-mark unhold`, `--allow-change-held-packages`, or a forced toolkit upgrade. In every accepted path, retain conditional Docker runtime configuration and the pinned CUDA container's exact-one-T4 validation.
+
+### Step 1: Add failing toolkit-state regressions
+
+Extend the command fakes to represent installed package versions and cover:
+
+- a coherent held `1.17.8-1` quartet skips NVIDIA package installation but still configures and validates the runtime;
+- a completely absent quartet installs all four packages in one APT invocation;
+- partial installation, mismatched versions, malformed/blank query records, and missing `nvidia-ctk` fail before any mutation;
+- unrelated held packages such as `nccl-gib` remain untouched;
+- dry-run and repeated install behavior retain their no-mutation/idempotence guarantees.
+
+Run the focused test first and confirm RED for the missing state handling.
+
+### Step 2: Implement the fail-closed package classifier
+
+Use exact package names and `dpkg-query` status/version output without lossy command-substitution parsing. Require four and only four classified records. Branch only to `reuse` (all installed, same version, CLI present) or `install` (all absent); reject every mixed or ambiguous state before the first `run_root` mutation. Do not inspect or alter unrelated holds.
+
+For the absent path, retain the signed stable repository setup and install these packages together with `--no-install-recommends`:
+
+```text
+nvidia-container-toolkit
+nvidia-container-toolkit-base
+libnvidia-container-tools
+libnvidia-container1
+```
+
+### Step 3: Verify focused and aggregate behavior
+
+Run Bash syntax plus the bootstrap suite under WSL, then the normal Windows aggregate. Require zero failures and verify the original two user-owned Ollama files are the only unrelated unstaged changes.
+
+### Step 4: Commit and review
+
+```powershell
+git add scripts/remote/bootstrap-host.sh tests/test_bootstrap.py
+git commit -m "fix: preserve vendor-held NVIDIA toolkit"
+```
+
+Obtain an independent Task 11 review before recreating Task 8's detached deployment checkout at the repaired commit. Task 8 must retry bootstrap from the beginning and must not manually unhold or upgrade the live toolkit.
+
+---
+
 ## Final review and handoff
 
 After Task 8:
