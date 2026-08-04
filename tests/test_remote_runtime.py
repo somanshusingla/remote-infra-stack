@@ -839,12 +839,14 @@ printf 'Avail\\n%s\\n' "$available"
     def test_preflight_rejects_wrong_or_failed_host_and_container_gpu_before_compose(self):
         cases = (
             ({"STACK_FAKE_HOST_GPU_NAMES": ""}, "host"),
+            ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4\n"}, "host"),
             ({"STACK_FAKE_HOST_GPU_NAMES": "Tesla V100"}, "host"),
             ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA A100"}, "host"),
             ({"STACK_FAKE_HOST_GPU_NAMES": "NVIDIA T4 extra"}, "host"),
             ({"STACK_FAKE_HOST_GPU_NAMES": "Tesla T4\nNVIDIA T4"}, "host"),
             ({"STACK_FAKE_NVIDIA_STATUS": "7"}, "host"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": ""}, "container"),
+            ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4\n"}, "container"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": "Tesla V100"}, "container"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA A100"}, "container"),
             ({"STACK_FAKE_CONTAINER_GPU_NAMES": "NVIDIA T4 extra"}, "container"),

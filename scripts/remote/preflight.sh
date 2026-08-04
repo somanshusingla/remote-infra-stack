@@ -85,20 +85,35 @@ if [[ -n "${selected[inference]+x}" ]]; then
   ' "$versions_env" 2>/dev/null) ||
     die "NVIDIA_CUDA_IMAGE is missing or malformed in versions.env"
 
-  host_gpu_output=$("$nvidia_smi_bin" \
-    --query-gpu=name --format=csv,noheader 2>/dev/null) ||
+  host_gpu_output_temp=$(mktemp) ||
+    die "could not create host GPU validation temporary file"
+  trap 'rm -f -- "$host_gpu_output_temp"' EXIT
+  if ! "$nvidia_smi_bin" --query-gpu=name --format=csv,noheader \
+    >"$host_gpu_output_temp" 2>/dev/null; then
     die "host GPU validation failed"
-  [[ -n "$host_gpu_output" && "$host_gpu_output" != *$'\n'* ]] ||
+  fi
+  mapfile -t host_gpu_names <"$host_gpu_output_temp"
+  rm -f -- "$host_gpu_output_temp"
+  trap - EXIT
+  [[ ${#host_gpu_names[@]} -eq 1 ]] ||
     die "host GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
-  is_t4_gpu_name "$host_gpu_output" ||
+  is_t4_gpu_name "${host_gpu_names[0]}" ||
     die "host GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 
-  container_gpu_output=$("$docker_bin" run --rm --gpus all "$cuda_image" \
-    nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) ||
+  container_gpu_output_temp=$(mktemp) ||
+    die "could not create container GPU validation temporary file"
+  trap 'rm -f -- "$container_gpu_output_temp"' EXIT
+  if ! "$docker_bin" run --rm --gpus all "$cuda_image" \
+    nvidia-smi --query-gpu=name --format=csv,noheader \
+    >"$container_gpu_output_temp" 2>/dev/null; then
     die "container GPU validation failed"
-  [[ -n "$container_gpu_output" && "$container_gpu_output" != *$'\n'* ]] ||
+  fi
+  mapfile -t container_gpu_names <"$container_gpu_output_temp"
+  rm -f -- "$container_gpu_output_temp"
+  trap - EXIT
+  [[ ${#container_gpu_names[@]} -eq 1 ]] ||
     die "container GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
-  is_t4_gpu_name "$container_gpu_output" ||
+  is_t4_gpu_name "${container_gpu_names[0]}" ||
     die "container GPU validation requires exactly one NVIDIA T4; nvidia-smi may label it Tesla T4"
 
   docker_root=$("$docker_bin" info --format '{{.DockerRootDir}}' 2>/dev/null) ||
