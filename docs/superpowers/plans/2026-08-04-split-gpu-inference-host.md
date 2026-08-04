@@ -702,6 +702,63 @@ Expected: complete suite passes; only the two preserved user-owned Ollama edits 
 
 ---
 
+## Task 9: Accept the T4 label reported by the GCP driver
+
+**Discovery:** Task 8's first live bootstrap failed before mutation because driver 580.173.02 reports the one approved accelerator as `Tesla T4`, while the reviewed scripts accepted only `NVIDIA T4`. GCP independently reports one `nvidia-tesla-t4`. This compatibility repair must complete before Task 8 resumes.
+
+**Files:**
+
+- Modify: `scripts/remote/bootstrap-host.sh`
+- Modify: `scripts/remote/preflight.sh`
+- Modify: `tests/test_bootstrap.py`
+- Modify: `tests/test_remote_runtime.py`
+
+**Contract:** Require exactly one GPU whose complete `nvidia-smi` name is either `Tesla T4` (the observed GCP driver label) or `NVIDIA T4` (the already-supported label). Do not use substring matching and do not accept any other Tesla/NVIDIA product. Apply the same exact predicate to host and disposable-container inventory in bootstrap and preflight. Keep every pre-mutation, inference-only, exit-status, blank-record, and strict-count guarantee unchanged.
+
+### Step 1: Add the live-label failing regressions
+
+Add focused tests that make host and container `nvidia-smi` return exactly `Tesla T4` for bootstrap and preflight. Run them against the current code and confirm RED only because the exact label is rejected. Add table cases proving both accepted labels pass and `Tesla V100`, `NVIDIA A100`, `NVIDIA T4 extra`, an empty row, and two T4 rows fail.
+
+### Step 2: Implement one exact predicate in each standalone script
+
+Use an exact `case`/comparison accepting only `Tesla T4|NVIDIA T4`. Retain the exact-one-record check before applying the predicate. Update the actionable error to state that `nvidia-smi` may label an NVIDIA T4 as `Tesla T4`. Do not weaken command-status handling or image pin validation.
+
+### Step 3: Verify focused and lifecycle behavior
+
+Run under WSL so Bash paths execute:
+
+```powershell
+wsl.exe -d Ubuntu -- bash -lc "cd /mnt/c/Users/Somanshu/Documents/code/agents/remote-infra-stack/.worktrees/remote-infra-stack && bash -n scripts/remote/bootstrap-host.sh && bash -n scripts/remote/preflight.sh && python3 -m unittest tests.test_bootstrap tests.test_remote_runtime tests.test_release_lifecycle -v"
+```
+
+Expected: all tests pass, including both aliases and every wrong/count/status failure.
+
+### Step 4: Commit
+
+```powershell
+git add scripts/remote/bootstrap-host.sh scripts/remote/preflight.sh tests/test_bootstrap.py tests/test_remote_runtime.py
+git commit -m "fix: accept GCP Tesla T4 driver label"
+```
+
+---
+
+## Task 10: Refresh local verification after the live-label repair
+
+**Files:**
+
+- Modify: `docs/verification/split-gpu-inference-local.md`
+
+Run the complete Task 7 verification matrix again on the Task 9 commit: all script syntax, both Compose renders, the normal unrestricted Windows aggregate, and the complementary WSL/Git Bash focused suites. Update the evidence timestamp, tested commit, aggregate counts, and focused POSIX counts without removing the prior diagnostic explanation. Commit only the evidence refresh:
+
+```powershell
+git add docs/verification/split-gpu-inference-local.md
+git commit -m "test: refresh split GPU local evidence"
+```
+
+Task 8 then removes or recreates its old detached deployment checkout at this new reviewed `HEAD` and restarts from SSH/target verification. It must not reuse the old release archive.
+
+---
+
 ## Final review and handoff
 
 After Task 8:
