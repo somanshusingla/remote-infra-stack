@@ -21,6 +21,12 @@ class BootstrapTests(unittest.TestCase):
         "docker-buildx-plugin",
         "docker-compose-plugin",
     )
+    nvidia_toolkit_packages = (
+        "nvidia-container-toolkit",
+        "nvidia-container-toolkit-base",
+        "libnvidia-container-tools",
+        "libnvidia-container1",
+    )
 
     @classmethod
     def setUpClass(cls):
@@ -122,7 +128,20 @@ case "$name" in
     record READ "$@"
     while IFS= read -r line || [[ -n "$line" ]]; do printf '%s\n' "$line"; done
     ;;
-  dpkg-query|getent)
+  dpkg-query)
+    record READ "$@"
+    package=${!#}
+    case "$package" in
+      nvidia-container-toolkit) query_variable=STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT ;;
+      nvidia-container-toolkit-base) query_variable=STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT_BASE ;;
+      libnvidia-container-tools) query_variable=STACK_FAKE_QUERY_LIBNVIDIA_CONTAINER_TOOLS ;;
+      libnvidia-container1) query_variable=STACK_FAKE_QUERY_LIBNVIDIA_CONTAINER1 ;;
+      *) exit 1 ;;
+    esac
+    [[ -n "${!query_variable+x}" ]] || exit 1
+    printf '%s' "${!query_variable}"
+    ;;
+  getent)
     record READ "$@"
     exit 1
     ;;
@@ -187,6 +206,14 @@ case "$name" in
     record READ "$@"
     /usr/bin/tr "$@"
     ;;
+  apt-mark)
+    if [[ "${1:-}" == showhold ]]; then
+      record READ "$@"
+      [[ -z "${STACK_FAKE_APT_HOLDS:-}" ]] || printf '%s\n' "$STACK_FAKE_APT_HOLDS"
+    else
+      record MUTATE "$@"
+    fi
+    ;;
   apt-get|chmod|groupadd|install|usermod)
     record MUTATE "$@"
     ;;
@@ -230,6 +257,14 @@ esac
             shutil.copyfile(shim, directory / "nvidia-smi")
             (directory / "nvidia-smi").chmod(shim.stat().st_mode)
 
+    def toolkit_query_environment(self, version: str = "1.17.8-1"):
+        return {
+            "STACK_FAKE_QUERY_" + package.upper().replace("-", "_"): (
+                f"{package}\tinstall ok installed\t{version}\n"
+            )
+            for package in self.nvidia_toolkit_packages
+        }
+
     def run_bootstrap(
         self,
         fixture: str,
@@ -239,12 +274,15 @@ esac
         gpu_names: str | None = None,
         extra_env: dict[str, str] | None = None,
         script_path: Path | None = None,
+        nvidia_ctk_present: bool = True,
     ):
         with tempfile.TemporaryDirectory() as directory:
             shim_directory = Path(directory)
             log = shim_directory / "invocations.log"
             log.write_text("", encoding="utf-8")
             self.create_host_shims(shim_directory, gpu_names)
+            if not nvidia_ctk_present:
+                (shim_directory / "nvidia-ctk").unlink()
             env = os.environ.copy()
             env.update({
                 "PATH": f"{shim_directory.as_posix()}{os.pathsep}{env['PATH']}",
@@ -562,7 +600,7 @@ esac
             "https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list",
             "write /etc/apt/sources.list.d/nvidia-container-toolkit.list",
             "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /",
-            "apt-get install --yes --no-install-recommends nvidia-container-toolkit",
+            "apt-get install --yes --no-install-recommends nvidia-container-toolkit nvidia-container-toolkit-base libnvidia-container-tools libnvidia-container1",
             "nvidia-ctk runtime configure --runtime=docker",
             "systemctl restart docker",
             f"docker run --rm --gpus all {self.cuda_image} nvidia-smi --query-gpu=name --format=csv\\,noheader",
@@ -572,8 +610,16 @@ esac
             next_position = result.stdout.find(fragment, position + 1)
             self.assertGreater(next_position, position, fragment)
             position = next_position
+        self.assertEqual(
+            1,
+            result.stdout.count(
+                "apt-get install --yes --no-install-recommends "
+                "nvidia-container-toolkit nvidia-container-toolkit-base "
+                "libnvidia-container-tools libnvidia-container1"
+            ),
+        )
 
-    def test_gpu_runtime_configuration_is_byte_idempotent_and_restarts_once(self):
+    def test_coherent_gpu_toolkit_is_reused_and_runtime_configuration_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo = root / "repository"
@@ -582,6 +628,7 @@ esac
             environment = {
                 "STACK_BOOTSTRAP_DRY_RUN": "0",
                 "STACK_FAKE_DAEMON_JSON": daemon_json.as_posix(),
+                **self.toolkit_query_environment(),
             }
 
             first, first_invocations = self.run_bootstrap(
@@ -616,8 +663,13 @@ esac
             [line for line in second_invocations if "systemctl restart docker" in line],
         )
         for invocations in (first_invocations, second_invocations):
-            self.assertIn(
-                "MUTATE apt-get install --yes --no-install-recommends nvidia-container-toolkit",
+            self.assertFalse(
+                [
+                    line
+                    for line in invocations
+                    if "apt-get install --yes --no-install-recommends nvidia" in line
+                    or "apt-get install --yes --no-install-recommends libnvidia" in line
+                ],
                 invocations,
             )
             self.assertIn(
@@ -627,6 +679,114 @@ esac
                 f"MUTATE docker run --rm --gpus all {self.cuda_image} nvidia-smi --query-gpu=name --format=csv\\,noheader",
                 invocations,
             )
+
+    def test_gpu_toolkit_rejects_ambiguous_package_evidence_before_mutation(self):
+        coherent = self.toolkit_query_environment()
+        cases = {
+            "partial": {
+                next(iter(coherent)): next(iter(coherent.values())),
+            },
+            "version skew": {
+                **coherent,
+                "STACK_FAKE_QUERY_LIBNVIDIA_CONTAINER1": (
+                    "libnvidia-container1\tinstall ok installed\t1.19.1-1\n"
+                ),
+            },
+            "wrong package name": {
+                **coherent,
+                "STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT": (
+                    "nvidia-container-toolkit-extra\tinstall ok installed\t1.17.8-1\n"
+                ),
+            },
+            "blank record": {
+                **coherent,
+                "STACK_FAKE_QUERY_NVIDIA_CONTAINER_TOOLKIT_BASE": "\n",
+            },
+            "extra record": {
+                **coherent,
+                "STACK_FAKE_QUERY_LIBNVIDIA_CONTAINER_TOOLS": (
+                    "libnvidia-container-tools\tinstall ok installed\t1.17.8-1\n"
+                    "libnvidia-container1\tinstall ok installed\t1.17.8-1\n"
+                ),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            for name, query_environment in cases.items():
+                with self.subTest(name=name):
+                    result, invocations = self.run_bootstrap(
+                        "ubuntu-26.04",
+                        repo,
+                        "--install",
+                        arguments=("--gpu", "--cuda-image", self.cuda_image),
+                        gpu_names="NVIDIA T4",
+                        extra_env={
+                            "STACK_BOOTSTRAP_DRY_RUN": "0",
+                            "STACK_FAKE_DAEMON_JSON": (
+                                root / f"daemon-{name.replace(' ', '-')}.json"
+                            ).as_posix(),
+                            **query_environment,
+                        },
+                    )
+
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("NVIDIA container toolkit package state", result.stderr)
+                    self.assertFalse(
+                        [line for line in invocations if line.startswith("MUTATE")],
+                        invocations,
+                    )
+
+    def test_coherent_gpu_toolkit_without_cli_fails_before_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={
+                    "STACK_BOOTSTRAP_DRY_RUN": "0",
+                    "STACK_FAKE_DAEMON_JSON": (root / "daemon.json").as_posix(),
+                    **self.toolkit_query_environment(),
+                },
+                nvidia_ctk_present=False,
+            )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("nvidia-ctk", result.stderr)
+        self.assertFalse(
+            [line for line in invocations if line.startswith("MUTATE")], invocations
+        )
+
+    def test_vendor_toolkit_reuse_never_inspects_or_changes_unrelated_holds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repository"
+            self.create_repository(repo, "resolute")
+            result, invocations = self.run_bootstrap(
+                "ubuntu-26.04",
+                repo,
+                "--install",
+                arguments=("--gpu", "--cuda-image", self.cuda_image),
+                gpu_names="NVIDIA T4",
+                extra_env={
+                    "STACK_BOOTSTRAP_DRY_RUN": "0",
+                    "STACK_FAKE_DAEMON_JSON": (root / "daemon.json").as_posix(),
+                    "STACK_FAKE_APT_HOLDS": "nccl-gib",
+                    **self.toolkit_query_environment(),
+                },
+            )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        evidence = "\n".join((result.stdout, result.stderr, *invocations))
+        self.assertNotIn("apt-mark", evidence)
+        self.assertNotIn("unhold", evidence)
+        self.assertNotIn("allow-change-held-packages", evidence)
 
     def test_gpu_install_writes_official_keyring_and_signed_repository(self):
         with tempfile.TemporaryDirectory() as directory:

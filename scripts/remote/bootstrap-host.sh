@@ -158,6 +158,73 @@ if [[ "$mode" == --check ]]; then
   exit 0
 fi
 
+nvidia_toolkit_packages=(
+  nvidia-container-toolkit
+  nvidia-container-toolkit-base
+  libnvidia-container-tools
+  libnvidia-container1
+)
+nvidia_toolkit_action=
+if (( gpu_mode == 1 )); then
+  command -v dpkg-query >/dev/null 2>&1 ||
+    die "GPU mode requires dpkg-query to classify the NVIDIA container toolkit package state"
+  nvidia_toolkit_query_temp=$(mktemp) ||
+    die "could not create NVIDIA container toolkit query temporary file"
+  trap 'rm -f -- "$nvidia_keyring_temp" "$nvidia_toolkit_query_temp"' EXIT
+  nvidia_toolkit_records=()
+  for package in "${nvidia_toolkit_packages[@]}"; do
+    : >"$nvidia_toolkit_query_temp"
+    if dpkg-query -W -f='${Package}\t${Status}\t${Version}\n' "$package" \
+      >"$nvidia_toolkit_query_temp" 2>/dev/null; then
+      mapfile -t package_records <"$nvidia_toolkit_query_temp"
+      [[ ${#package_records[@]} -eq 1 && -n "${package_records[0]}" ]] ||
+        die "NVIDIA container toolkit package state is malformed for $package; repair the official four-package set and retry"
+      nvidia_toolkit_records+=("${package_records[0]}")
+    else
+      [[ ! -s "$nvidia_toolkit_query_temp" ]] ||
+        die "NVIDIA container toolkit package state is ambiguous for $package; repair the official four-package set and retry"
+      nvidia_toolkit_records+=("$package"$'\t''absent'$'\t''-')
+    fi
+  done
+  rm -f -- "$nvidia_toolkit_query_temp"
+  trap 'rm -f -- "$nvidia_keyring_temp"' EXIT
+
+  [[ ${#nvidia_toolkit_records[@]} -eq ${#nvidia_toolkit_packages[@]} ]] ||
+    die "NVIDIA container toolkit package state is incomplete; repair the official four-package set and retry"
+  nvidia_toolkit_versions=()
+  nvidia_toolkit_absent=0
+  for index in "${!nvidia_toolkit_packages[@]}"; do
+    IFS=$'\t' read -r query_package query_status query_version query_extra \
+      <<<"${nvidia_toolkit_records[index]}"
+    [[ "$query_package" == "${nvidia_toolkit_packages[index]}" &&
+       -z "${query_extra:-}" ]] ||
+      die "NVIDIA container toolkit package state has an unexpected record; repair the official four-package set and retry"
+    if [[ "$query_status" == "install ok installed" ]]; then
+      [[ -n "$query_version" && "$query_version" =~ ^[^[:space:]]+$ ]] ||
+        die "NVIDIA container toolkit package state has an invalid version for $query_package; repair the official four-package set and retry"
+      nvidia_toolkit_versions+=("$query_version")
+    elif [[ "$query_status" == absent && "$query_version" == - ]]; then
+      (( nvidia_toolkit_absent += 1 ))
+    else
+      die "NVIDIA container toolkit package state is unsupported for $query_package; repair the official four-package set and retry"
+    fi
+  done
+
+  if (( ${#nvidia_toolkit_versions[@]} == ${#nvidia_toolkit_packages[@]} )); then
+    for version in "${nvidia_toolkit_versions[@]:1}"; do
+      [[ "$version" == "${nvidia_toolkit_versions[0]}" ]] ||
+        die "NVIDIA container toolkit package state is version-skewed; align the official four-package set and retry"
+    done
+    command -v nvidia-ctk >/dev/null 2>&1 ||
+      die "NVIDIA container toolkit package state is coherent but nvidia-ctk is unavailable; repair the official four-package set and retry"
+    nvidia_toolkit_action=reuse
+  elif (( nvidia_toolkit_absent == ${#nvidia_toolkit_packages[@]} )); then
+    nvidia_toolkit_action=install
+  else
+    die "NVIDIA container toolkit package state is partial; install or remove the complete official four-package set and retry"
+  fi
+fi
+
 dry_run=${STACK_BOOTSTRAP_DRY_RUN:-0}
 [[ "$dry_run" == 0 || "$dry_run" == 1 ]] ||
   die "STACK_BOOTSTRAP_DRY_RUN must be 0 or 1"
@@ -259,20 +326,26 @@ run_root apt-get install --yes "${docker_packages[@]}"
 run_root systemctl enable --now docker
 
 if (( gpu_mode == 1 )); then
-  run_root install -m 0755 -d /usr/share/keyrings /etc/apt/sources.list.d
-  if [[ "$dry_run" == 1 ]]; then
-    printf '+ curl --fail --silent --show-error --location %q | gpg --dearmor | write %s\n' \
-      "$nvidia_gpg_url" "$nvidia_keyring_path"
+  if [[ "$nvidia_toolkit_action" == install ]]; then
+    run_root install -m 0755 -d /usr/share/keyrings /etc/apt/sources.list.d
+    if [[ "$dry_run" == 1 ]]; then
+      printf '+ curl --fail --silent --show-error --location %q | gpg --dearmor | write %s\n' \
+        "$nvidia_gpg_url" "$nvidia_keyring_path"
+    else
+      write_root_file_from_path "$nvidia_keyring_path" "$nvidia_keyring_temp"
+      rm -f -- "$nvidia_keyring_temp"
+      trap - EXIT
+    fi
+    run_root chmod a+r "$nvidia_keyring_path"
+    printf '+ fetched %s\n' "$nvidia_repository_url"
+    write_root_file "$nvidia_sources_path" "$nvidia_signed_repository_list"
+    run_root apt-get update
+    run_root apt-get install --yes --no-install-recommends \
+      "${nvidia_toolkit_packages[@]}"
   else
-    write_root_file_from_path "$nvidia_keyring_path" "$nvidia_keyring_temp"
     rm -f -- "$nvidia_keyring_temp"
     trap - EXIT
   fi
-  run_root chmod a+r "$nvidia_keyring_path"
-  printf '+ fetched %s\n' "$nvidia_repository_url"
-  write_root_file "$nvidia_sources_path" "$nvidia_signed_repository_list"
-  run_root apt-get update
-  run_root apt-get install --yes --no-install-recommends nvidia-container-toolkit
 
   if [[ "$dry_run" == 1 ]]; then
     run_root nvidia-ctk runtime configure --runtime=docker
