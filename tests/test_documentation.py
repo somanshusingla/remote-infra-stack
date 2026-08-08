@@ -233,7 +233,7 @@ class DocumentationContractTests(unittest.TestCase):
             "OLLAMA_LLM_MEMORY=14g",
             "OLLAMA_EMBEDDING_MEMORY=2g",
             "OLLAMA_CONTEXT_LENGTH=8192",
-            "OLLAMA_KEEP_ALIVE=30m",
+            "OLLAMA_KEEP_ALIVE=5m",
         )
         tunnel_keys = (
             "LOCAL_CHROMA_ADMIN_PORT=18001",

@@ -38,11 +38,8 @@ DYNAMODB_ADMIN_MEMORY=512m
 OLLAMA_LLM_MEMORY=14g
 OLLAMA_EMBEDDING_MEMORY=2g
 OLLAMA_CONTEXT_LENGTH=8192
-OLLAMA_KEEP_ALIVE=30m
+OLLAMA_KEEP_ALIVE=5m
 ```
-
-If the existing `.env` already contains `OLLAMA_KEEP_ALIVE=5m`, replace only that
-assignment with `OLLAMA_KEEP_ALIVE=30m`; do not regenerate the file or its secrets.
 
 Manually append these five keys to an existing target file when absent:
 
@@ -439,14 +436,6 @@ The remote preflight warns when selected limits plus 2 GiB host overhead exceed 
 memory, but it does not reject the deployment. Increase `OLLAMA_LLM_MEMORY` or another
 service's limit only when measurement justifies it, and resize the GPU host when the
 selected peak workload does not fit.
-
-The measured NVIDIA T4 layout commits two parallel requests for the LLM container and
-four for the embedding container. Each dedicated container still loads exactly one
-model, uses an `8192`-token context, and keeps its model resident for `30m`. Ollama
-documents that memory use grows with parallelism multiplied by context length in its
-[concurrency guidance](https://docs.ollama.com/faq#how-does-ollama-handle-concurrent-requests).
-The `2/4` concurrency values are accepted only for this measured T4 layout; benchmark
-again before raising concurrency or changing the GPU, models, or context.
 
 ## Data lifecycle and recovery boundary
 

@@ -20,7 +20,7 @@ class EnvGenerationTests(unittest.TestCase):
         self.assertEqual("14g", expected["OLLAMA_LLM_MEMORY"])
         self.assertEqual("2g", expected["OLLAMA_EMBEDDING_MEMORY"])
         self.assertEqual("8192", expected["OLLAMA_CONTEXT_LENGTH"])
-        self.assertEqual("30m", expected["OLLAMA_KEEP_ALIVE"])
+        self.assertEqual("5m", expected["OLLAMA_KEEP_ALIVE"])
 
     def assert_contract(self, output: Path) -> None:
         generated = read_env(output)
