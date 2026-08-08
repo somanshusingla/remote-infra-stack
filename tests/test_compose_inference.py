@@ -1,5 +1,7 @@
+import os
 from copy import deepcopy
 import unittest
+from unittest.mock import patch
 
 from tests.helpers import render_compose, repo_path
 
@@ -17,6 +19,7 @@ class InferenceComposeTests(unittest.TestCase):
         published_port,
         volume,
         memory,
+        parallel,
     ):
         self.assertEqual(["inference"], service["profiles"])
         self.assertEqual(
@@ -31,10 +34,10 @@ class InferenceComposeTests(unittest.TestCase):
         self.assertEqual(
             {
                 "OLLAMA_CONTEXT_LENGTH": "8192",
-                "OLLAMA_KEEP_ALIVE": "5m",
+                "OLLAMA_KEEP_ALIVE": "30m",
                 "OLLAMA_MAX_LOADED_MODELS": "1",
                 "OLLAMA_MODEL": model,
-                "OLLAMA_NUM_PARALLEL": "1",
+                "OLLAMA_NUM_PARALLEL": parallel,
             },
             service["environment"],
         )
@@ -101,6 +104,7 @@ class InferenceComposeTests(unittest.TestCase):
             published_port=11440,
             volume="ollama_llm_data",
             memory=15032385536,
+            parallel="2",
         )
 
     def test_embedding_uses_its_model_port_cache_and_memory_limit(self):
@@ -110,7 +114,65 @@ class InferenceComposeTests(unittest.TestCase):
             published_port=11441,
             volume="ollama_embedding_data",
             memory=2147483648,
+            parallel="4",
         )
+
+    def test_keep_alive_uses_balanced_default_when_override_is_empty(self):
+        with patch.dict(os.environ, {"OLLAMA_KEEP_ALIVE": ""}):
+            model = render_compose("inference")
+
+        self.assertEqual(
+            "30m",
+            model["services"]["ollama-llm"]["environment"]["OLLAMA_KEEP_ALIVE"],
+        )
+        self.assertEqual(
+            "30m",
+            model["services"]["ollama-embedding"]["environment"]["OLLAMA_KEEP_ALIVE"],
+        )
+
+    def test_parallelism_is_committed_per_service_and_ignores_operator_overrides(self):
+        poisoned_parallelism = {
+            "OLLAMA_NUM_PARALLEL": "97",
+            "OLLAMA_LLM_NUM_PARALLEL": "98",
+            "OLLAMA_EMBEDDING_NUM_PARALLEL": "99",
+        }
+        with patch.dict(os.environ, poisoned_parallelism):
+            model = render_compose("inference")
+
+        self.assertEqual(
+            "2",
+            model["services"]["ollama-llm"]["environment"]["OLLAMA_NUM_PARALLEL"],
+        )
+        self.assertEqual(
+            "4",
+            model["services"]["ollama-embedding"]["environment"]["OLLAMA_NUM_PARALLEL"],
+        )
+
+    def test_non_inference_services_do_not_receive_ollama_settings(self):
+        model = render_compose(
+            "core",
+            "vector",
+            "dynamodb",
+            "search",
+            "observability",
+            "tools",
+            "inference",
+        )
+        ollama_environment_keys = {
+            "OLLAMA_CONTEXT_LENGTH",
+            "OLLAMA_KEEP_ALIVE",
+            "OLLAMA_MAX_LOADED_MODELS",
+            "OLLAMA_MODEL",
+            "OLLAMA_NUM_PARALLEL",
+        }
+
+        for name, service in model["services"].items():
+            if name in {"ollama-llm", "ollama-embedding"}:
+                continue
+            with self.subTest(service=name):
+                self.assertTrue(
+                    ollama_environment_keys.isdisjoint(service.get("environment", {}))
+                )
 
     def test_inference_contract_rejects_crossed_or_weakened_service_configuration(self):
         llm = self.model["services"]["ollama-llm"]
@@ -164,6 +226,7 @@ class InferenceComposeTests(unittest.TestCase):
                         published_port=11440,
                         volume="ollama_llm_data",
                         memory=15032385536,
+                        parallel="2",
                     )
 
     def test_inference_volumes_have_stable_project_owned_names(self):

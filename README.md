@@ -199,8 +199,11 @@ DYNAMODB_ADMIN_MEMORY=512m
 OLLAMA_LLM_MEMORY=14g
 OLLAMA_EMBEDDING_MEMORY=2g
 OLLAMA_CONTEXT_LENGTH=8192
-OLLAMA_KEEP_ALIVE=5m
+OLLAMA_KEEP_ALIVE=30m
 ```
+
+If an existing `.env` already contains `OLLAMA_KEEP_ALIVE=5m`, replace only that
+assignment with `OLLAMA_KEEP_ALIVE=30m`; do not regenerate the file or its secrets.
 
 Copy `remote.env.example` to both ignored target files, then set the data host in
 `remote.data.env` and the GPU host in `remote.gpu.env`:
