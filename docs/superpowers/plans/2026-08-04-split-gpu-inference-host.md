@@ -938,44 +938,104 @@ artifact and do not change Compose or `.env`.
 
 **Files:**
 
-- Modify: `compose.yaml`
-- Modify: `.env.example`
-- Modify: `docs/operations.md`
-- Modify: `tests/test_compose_inference.py`
-- Modify: `tests/test_documentation.py`
+- Modify: `compose.yaml` - set the two literal service parallel values and the common
+  keep-alive fallback while preserving every other service property.
+- Modify: `.env.example` - change the generated/operator keep-alive default to `30m`.
+- Modify: `README.md` - keep the existing ignored-configuration upgrade block consistent
+  with the new `30m` default.
+- Modify: `docs/operations.md` - update the upgrade value and document the measured
+  T4-specific concurrency and memory boundary.
+- Modify: `tests/fixtures/stack.env` - render the balanced `30m` test configuration.
+- Modify: `tests/test_compose_inference.py` - enforce the exact per-service environment,
+  non-overridable parallel values, fallback, and non-inference isolation.
+- Modify: `tests/test_documentation.py` - update the existing both-guides configuration
+  value contract without adding a brittle explanatory-prose assertion.
+- Modify: `tests/test_env_generation.py` - require generated configuration to default to
+  `30m`.
 
 **Contract:** Set LLM parallelism to exactly `2`, embedding parallelism to exactly `4`,
 and the documented/default keep-alive to exactly `30m`. Keep context `8192`, loaded models
 `1`, service-specific memory caps, GPU reservations, profiles, ports, volumes, health,
 and every non-inference service unchanged. Parallelism remains a committed literal per
-service, not a free-form environment override.
+service, not a free-form environment override. Keep the historical
+`docs/superpowers/specs/2026-08-02-data-and-inference-profiles-design.md` record unchanged.
 
 ### Step 1: Add failing exact-value contracts
 
-Update Compose tests to assert each inference service's complete environment map, with
-LLM parallel `2`, embedding parallel `4`, common keep-alive `30m`, context `8192`, and
-loaded models `1`. Add negative invariants proving the parallel values are not sourced
-from `.env` substitution and no other service receives these settings. Update docs tests
-to require the balanced values and their T4/concurrency explanation.
+Before changing Compose, defaults, fixtures, or documentation, update
+`tests/test_compose_inference.py` so its contract helper accepts a literal expected
+parallel value and asserts each service's complete environment map: LLM parallel `2`,
+embedding parallel `4`, common keep-alive `30m`, context `8192`, and loaded models `1`.
+Add these behavioral cases using real Compose rendering:
 
-Run the focused tests and capture RED because production still renders `1/1` and `5m`.
+- render with `OLLAMA_KEEP_ALIVE` present but empty and require both services to receive
+  the Compose fallback `30m`;
+- poison `OLLAMA_NUM_PARALLEL`, `OLLAMA_LLM_NUM_PARALLEL`, and
+  `OLLAMA_EMBEDDING_NUM_PARALLEL` in the calling environment, then require the rendered
+  values to remain the committed literals `2` and `4`;
+- render all profiles and require every non-inference service environment to omit the
+  Ollama context, keep-alive, loaded-model, model, and parallel keys.
+
+Change `tests/test_env_generation.py` to expect `OLLAMA_KEEP_ALIVE=30m`. Change only the
+existing both-guides configuration-value contract in `tests/test_documentation.py` from
+`5m` to `30m`; do not add an exact-sentence or regex test for the new explanatory prose.
+That prose is manually inspected in Step 3, as required by the plan-wide preflight
+correction.
+
+Run:
+
+```powershell
+python -m unittest tests.test_compose_inference tests.test_env_generation.EnvGenerationTests.test_example_declares_data_and_inference_resource_defaults tests.test_documentation.DocumentationContractTests.test_both_guides_document_ignored_env_upgrade_keys -v
+```
+
+Capture RED specifically because Compose still renders literal parallel `1/1` and a
+`5m` empty-value fallback, `.env.example` still declares `5m`, and both current guides
+still publish `5m`. The non-inference isolation case already describes a preserved
+boundary and may remain green during this RED run.
 
 ### Step 2: Make the minimal Compose and documentation change
 
-Change only the two inference environment maps, `.env.example` keep-alive, and the
-operator configuration/concurrency explanation. Cite Ollama's documented
-parallelism-times-context memory behavior and warn that these values are accepted only
-for the measured T4 layout.
+In `compose.yaml`, change only the LLM parallel literal to `2`, the embedding parallel
+literal to `4`, and both keep-alive fallbacks to `30m`. Change `OLLAMA_KEEP_ALIVE` to
+`30m` in `.env.example` and `tests/fixtures/stack.env`. Update the existing upgrade blocks
+in both `README.md` and `docs/operations.md` to `30m`; explicitly tell operators who
+already have `OLLAMA_KEEP_ALIVE=5m` to replace that one non-secret assignment rather than
+regenerate their ignored `.env`.
+
+In `docs/operations.md`, explain that the committed T4 layout uses two LLM requests and
+four embedding requests in parallel, retains one loaded model per dedicated container,
+keeps context at `8192`, and is accepted only for the measured T4 layout. Cite
+`https://docs.ollama.com/faq#how-does-ollama-handle-concurrent-requests` for the documented
+parallelism-times-context memory behavior. Manually review this explanation for semantic
+coverage; do not add a test that merely matches its wording. Do not change the historical
+design spec, model pins, API examples, ports, volumes, memory caps, GPU reservations,
+health timeouts, or non-inference services.
 
 ### Step 3: Verify and commit
 
 Render inference and every non-inference profile with a redacted temporary `.env`. Run
 the focused Compose/documentation/repository suites, `git diff --check`, and confirm only
-the five authorized Task 15 files plus the two preserved user edits were present before
+the eight authorized Task 15 files plus the two preserved user edits were present before
 commit.
 
+Run:
+
 ```powershell
-git add compose.yaml .env.example docs/operations.md tests/test_compose_inference.py tests/test_documentation.py
+docker compose --env-file versions.env --env-file tests/fixtures/stack.env --profile inference config --quiet
+docker compose --env-file versions.env --env-file tests/fixtures/stack.env --profile core --profile vector --profile dynamodb --profile search --profile observability --profile tools config --quiet
+python -m unittest tests.test_compose_inference tests.test_compose_invariants tests.test_env_generation tests.test_documentation tests.test_repository_contract -v
+git diff --check
+git status --short
+```
+
+Manually inspect the rendered inference environment for exact `2/4`, `1/1`, `8192`, and
+`30m`; inspect the non-inference render for absence of Ollama settings; and review the
+operator explanation for the T4-only scope, exact concurrency, unchanged context/model
+count, memory-scaling warning, and official Ollama reference without relying on a prose
+grep test.
+
+```powershell
+git add compose.yaml .env.example README.md docs/operations.md tests/fixtures/stack.env tests/test_compose_inference.py tests/test_documentation.py tests/test_env_generation.py
 git commit -m "feat: balance T4 inference concurrency"
 ```
 
