@@ -118,46 +118,46 @@ class InferenceComposeTests(unittest.TestCase):
 
         swapped_model = deepcopy(llm)
         swapped_model["environment"]["OLLAMA_MODEL"] = "embeddinggemma:300m"
-        cases.append(("swapped model", swapped_model))
+        cases.append(("swapped model", swapped_model, AssertionError))
 
         swapped_port = deepcopy(llm)
         swapped_port["ports"][0]["published"] = "11441"
-        cases.append(("swapped port", swapped_port))
+        cases.append(("swapped port", swapped_port, AssertionError))
 
         swapped_volume = deepcopy(llm)
         swapped_volume["volumes"][0]["source"] = "ollama_embedding_data"
-        cases.append(("swapped cache", swapped_volume))
+        cases.append(("swapped cache", swapped_volume, AssertionError))
 
         writable_bootstrap = deepcopy(llm)
         writable_bootstrap["volumes"][1]["read_only"] = False
-        cases.append(("writable bootstrap", writable_bootstrap))
+        cases.append(("writable bootstrap", writable_bootstrap, AssertionError))
 
         wrong_bind_source = deepcopy(llm)
         wrong_bind_source["volumes"][1]["source"] = str(
             repo_path("config/ollama/other.sh")
         )
-        cases.append(("wrong bootstrap source", wrong_bind_source))
+        cases.append(("wrong bootstrap source", wrong_bind_source, AssertionError))
 
         list_healthcheck = deepcopy(llm)
         list_healthcheck["healthcheck"]["test"][1] = (
             "test -f /tmp/remote-infra-model-ready && "
             "OLLAMA_HOST=127.0.0.1:11434 /bin/ollama list >/dev/null"
         )
-        cases.append(("list healthcheck", list_healthcheck))
+        cases.append(("list healthcheck", list_healthcheck, AssertionError))
 
         cross_dependency = deepcopy(llm)
         cross_dependency["depends_on"] = {
             "ollama-embedding": {"condition": "service_healthy"}
         }
-        cases.append(("cross dependency", cross_dependency))
+        cases.append(("cross dependency", cross_dependency, AssertionError))
 
         no_gpu_reservation = deepcopy(llm)
         del no_gpu_reservation["deploy"]["resources"]["reservations"]["devices"]
-        cases.append(("missing GPU reservation", no_gpu_reservation))
+        cases.append(("missing GPU reservation", no_gpu_reservation, KeyError))
 
-        for name, mutated in cases:
+        for name, mutated, expected_exception in cases:
             with self.subTest(mutation=name):
-                with self.assertRaises((AssertionError, KeyError)):
+                with self.assertRaises(expected_exception):
                     self.assert_inference_service_contract(
                         mutated,
                         model="gemma4:e4b",

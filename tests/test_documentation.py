@@ -80,10 +80,52 @@ class DocumentationContractTests(unittest.TestCase):
             "required packages",
             "AWS",
             "GCP",
-            "existing SSH-accessible\nUbuntu VM",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, readme)
+        self.assertRegex(
+            readme,
+            re.compile(r"existing\s+SSH-accessible\s+Ubuntu\s+VM", re.IGNORECASE),
+        )
+
+    def test_both_guides_distinguish_data_and_gpu_bootstrap_commands(self):
+        expected_bash = [
+            ("data", "./scripts/bootstrap.sh"),
+            ("gpu", "./scripts/bootstrap.sh --gpu"),
+        ]
+        expected_powershell = [
+            ("data", r".\scripts\bootstrap.ps1"),
+            ("gpu", r".\scripts\bootstrap.ps1 -Gpu"),
+        ]
+        for relative_path in ("README.md", "docs/operations.md"):
+            document = self.read_document(relative_path)
+            bash_commands = []
+            powershell_commands = []
+            selected_powershell_target = None
+            for line in document.splitlines():
+                bash_match = re.fullmatch(
+                    r"STACK_REMOTE_ENV=\S*remote\.(data|gpu)\.env "
+                    r"(\./scripts/bootstrap\.sh(?: --gpu)?)",
+                    line,
+                )
+                if bash_match:
+                    bash_commands.append(bash_match.groups())
+
+                target_match = re.fullmatch(
+                    r"\$env:STACK_REMOTE_ENV = '[^']*remote\.(data|gpu)\.env'",
+                    line,
+                )
+                if target_match:
+                    selected_powershell_target = target_match.group(1)
+                if line.startswith(r".\scripts\bootstrap.ps1"):
+                    powershell_commands.append(
+                        (selected_powershell_target, line)
+                    )
+
+            with self.subTest(document=relative_path, shell="bash"):
+                self.assertEqual(expected_bash, bash_commands)
+            with self.subTest(document=relative_path, shell="powershell"):
+                self.assertEqual(expected_powershell, powershell_commands)
 
     def test_readme_lists_openssl_before_the_bash_quick_start(self):
         readme = self.read_document("README.md")

@@ -26,7 +26,7 @@ add_forward() {
     [[ "$used_port" != "$local_port" ]] || common_die "duplicate local port: $local_port"
   done
   selected_local_ports+=("$local_port")
-  forward_args+=(-L "$local_port:127.0.0.1:$remote_port")
+  forward_args+=(-L "127.0.0.1:$local_port:127.0.0.1:$remote_port")
 }
 
 warn_probe_fallback() {
@@ -147,6 +147,7 @@ command -v ssh >/dev/null 2>&1 || common_die "required command is unavailable: s
 
 ssh "${ssh_args[@]}" -NT \
   -o ExitOnForwardFailure=yes \
+  -o GatewayPorts=no \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   "${forward_args[@]}" "$ssh_target"

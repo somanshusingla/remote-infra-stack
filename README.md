@@ -97,7 +97,7 @@ STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/check.sh core vecto
 STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/bootstrap.sh
 STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/deploy.sh core vector dynamodb
 STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/check.sh inference
-STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh --gpu
 STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/deploy.sh inference
 ```
 
@@ -147,7 +147,7 @@ $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
 .\scripts\deploy.ps1 core vector dynamodb
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
 .\scripts\check.ps1 inference
-.\scripts\bootstrap.ps1
+.\scripts\bootstrap.ps1 -Gpu
 .\scripts\deploy.ps1 inference
 ```
 

@@ -55,10 +55,19 @@ if "--arg" in arguments:
         raise SystemExit(0 if healthy else 1)
     if arguments[index + 1] == "model":
         model = arguments[index + 2]
-        resident = any(
-            (item.get("name") == model or item.get("model") == model)
-            and float(item.get("size_vram", 0)) > 0
-            for item in values.get("models", [])
+        models = values.get("models")
+        resident = isinstance(models, list) and len(models) == 1
+        item = models[0] if resident and isinstance(models[0], dict) else {}
+        size = item.get("size")
+        size_vram = item.get("size_vram")
+        resident = resident and bool(item) and (
+            item.get("name") == model or item.get("model") == model
+        ) and (
+            isinstance(size, (int, float)) and not isinstance(size, bool)
+        ) and (
+            isinstance(size_vram, (int, float)) and not isinstance(size_vram, bool)
+        ) and (
+            size > 0 and size_vram > 0 and size_vram == size
         )
         raise SystemExit(0 if resident else 1)
     raise SystemExit(2)

@@ -44,14 +44,14 @@ if [[ "$1" == --fail ]]; then
       if [[ -n "${STACK_FAKE_LLM_PS_RESPONSE+x}" ]]; then
         printf '%s\n' "$STACK_FAKE_LLM_PS_RESPONSE"
       else
-        printf '%s\n' '{"models":[{"name":"gemma4:e4b","model":"gemma4:e4b","size_vram":1024}]}'
+        printf '%s\n' '{"models":[{"name":"gemma4:e4b","model":"gemma4:e4b","size":1024,"size_vram":1024}]}'
       fi
       ;;
     http://127.0.0.1:11441/api/ps)
       if [[ -n "${STACK_FAKE_EMBEDDING_PS_RESPONSE+x}" ]]; then
         printf '%s\n' "$STACK_FAKE_EMBEDDING_PS_RESPONSE"
       else
-        printf '%s\n' '{"models":[{"name":"embeddinggemma:300m","model":"embeddinggemma:300m","size_vram":256}]}'
+        printf '%s\n' '{"models":[{"name":"embeddinggemma:300m","model":"embeddinggemma:300m","size":256,"size_vram":256}]}'
       fi
       ;;
   esac

@@ -109,11 +109,15 @@ verify_resident_model() {
   local model=$2
   if ! "$curl_bin" --fail --silent --show-error --max-time 120 "$endpoint" |
     "$jq_bin" -e --arg model "$model" '
-      any(.models[]?;
+      (.models | type == "array") and
+      (.models | length == 1) and
+      (.models[0] |
         ((.name == $model or .model == $model) and
-         ((.size_vram // 0 | tonumber) > 0)))
+         (.size | type == "number") and (.size > 0) and
+         (.size_vram | type == "number") and (.size_vram > 0) and
+         (.size_vram == .size)))
     ' >/dev/null 2>&1; then
-    die "approved Ollama model is not resident in positive VRAM"
+    die "approved Ollama model is not exclusively and fully resident in VRAM"
   fi
 }
 

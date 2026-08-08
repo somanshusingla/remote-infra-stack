@@ -92,7 +92,7 @@ the configuration without starting containers or pulling images.
 
 ```bash
 STACK_REMOTE_ENV=/absolute/path/to/remote.data.env ./scripts/bootstrap.sh
-STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh
+STACK_REMOTE_ENV=/absolute/path/to/remote.gpu.env ./scripts/bootstrap.sh --gpu
 ```
 
 Bootstrap installs Docker Engine and Compose, enables Docker, and persists both
@@ -266,7 +266,7 @@ images.
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.data.env'
 .\scripts\bootstrap.ps1
 $env:STACK_REMOTE_ENV = 'C:\absolute\path\to\remote.gpu.env'
-.\scripts\bootstrap.ps1
+.\scripts\bootstrap.ps1 -Gpu
 ```
 
 Bootstrap installs Docker Engine and Compose, enables Docker, and persists both

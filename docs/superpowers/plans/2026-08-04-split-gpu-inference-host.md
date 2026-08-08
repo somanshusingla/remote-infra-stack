@@ -574,8 +574,8 @@ git commit -m "test: verify split GPU contracts locally"
 **Known targets at plan time:**
 
 - Data VM: `<public-ip>`, SSH user `<ssh-principal>`.
-- GPU VM: instance `nvidia-t4-26-gb-us-central-1`, zone `us-central1-f`, initial external address `<public-ip>`, SSH user `<ssh-principal>`.
-- Dedicated identity: `<identity-file>`.
+- GPU VM: instance `<gpu-instance>`, zone `us-central1-f`, initial external address `<public-ip>`, SSH user `<ssh-principal>`.
+- Dedicated identity: `<path-to-dedicated-identity>`.
 
 Treat addresses as ephemeral observations. Discover the current values before every connection and never commit a complete public IP.
 

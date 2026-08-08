@@ -150,7 +150,7 @@ try {
         $selectedLocalPorts.Add($localPort)
         $forwardArguments.Add('-L')
         $forwardArguments.Add(
-            ('{0}:127.0.0.1:{1}' -f $localPort, [int]$entry.Remote)
+            ('127.0.0.1:{0}:127.0.0.1:{1}' -f $localPort, [int]$entry.Remote)
         )
     }
 
@@ -164,6 +164,7 @@ try {
     $nativeArguments += @(
         '-NT',
         '-o', 'ExitOnForwardFailure=yes',
+        '-o', 'GatewayPorts=no',
         '-o', 'ServerAliveInterval=30',
         '-o', 'ServerAliveCountMax=3'
     )

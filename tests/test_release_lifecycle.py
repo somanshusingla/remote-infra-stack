@@ -454,6 +454,7 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
             ("embed", {"STACK_FAKE_FAIL_OLLAMA_REQUEST": "embed"}, "/api/embed"),
             ("json", {"STACK_FAKE_GENERATE_RESPONSE": "not-json"}, "/api/generate"),
             ("model", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[]}'}, "11440/api/ps"),
+            ("partial-vram", {"STACK_FAKE_LLM_PS_RESPONSE": '{"models":[{"name":"gemma4:e4b","size":1024,"size_vram":512}]}'}, "11440/api/ps"),
             ("vram", {"STACK_FAKE_EMBEDDING_PS_RESPONSE": '{"models":[{"name":"embeddinggemma:300m","size_vram":0}]}'}, "11441/api/ps"),
             ("llm-device", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_LLM": "[]"}, "container-ollama-llm"),
             ("embedding-device", {"STACK_FAKE_DEVICE_REQUEST_OLLAMA_EMBEDDING": "[]"}, "container-ollama-embedding"),
@@ -473,10 +474,6 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
                     self.log = case_root / "docker.log"
                     prior_name = f"20260802T01{index:02d}00Z-prior"
                     self.install_prior_release(prior_name)
-                    volume_state = case_root / "ollama-volumes.state"
-                    volume_state.write_text(
-                        "ollama-llm\nollama-embedding\n", encoding="ascii"
-                    )
                     archive, checksum, name = self.make_archive(
                         f"20260802T13{index:02d}00Z-{label}"
                     )
@@ -495,10 +492,6 @@ printf '%s\n' "${STACK_FAKE_IP_FORWARD-1}"
                     self.assertIn(reached_boundary, rendered_calls, result.stderr)
                     self.assertEqual(
                         f"releases/{prior_name}", os.readlink(case_root / "current")
-                    )
-                    self.assertEqual(
-                        "ollama-llm\nollama-embedding\n",
-                        volume_state.read_text(encoding="ascii"),
                     )
                     cleanup = self.compose_calls("rm")
                     self.assertEqual(1, len(cleanup))

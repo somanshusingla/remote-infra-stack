@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import re
 import subprocess
@@ -9,6 +10,91 @@ from tests.helpers import read_env, repo_path, validate_fixture_contracts
 
 
 class RepositoryContractTests(unittest.TestCase):
+    def test_tracked_markdown_contains_only_sanitized_remote_examples(self):
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repo_path("."),
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout.decode("utf-8").split("\0")
+        markdown_paths = [path for path in tracked if path.lower().endswith(".md")]
+
+        ipv4_pattern = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+        concrete_identity_patterns = (
+            re.compile(
+                r"(?i)(?:[a-z]:[\\/])users[\\/](?!<)[^\\/\s`'\"<>]+"
+                r"[\\/]\.ssh[\\/](?!<)[^\\/\s`'\"<>]+"
+            ),
+            re.compile(
+                r"/home/(?!<)[^/\s`'\"<>]+/\.ssh/(?!<)[^/\s`'\"<>]+"
+            ),
+        )
+        assignment_pattern = re.compile(
+            r"(?i)\b(?P<key>REMOTE_(?:USER|HOST|IDENTITY_FILE)|"
+            r"SSH_(?:USER|PRINCIPAL|TARGET|IDENTITY_FILE))\s*=\s*"
+            r"[\"']?(?P<value>[^\s`\"']+)"
+        )
+        concrete_principal_patterns = (
+            re.compile(r"(?i)\bssh\s+(?:user|principal)\s+`(?!<)[^`]+`"),
+            re.compile(r"(?<![\w.-])(?!<)[\w.-]+:<public-key>"),
+            re.compile(r"(?<![\w.-])(?!<)[\w.-]+@<public-ip>"),
+        )
+        documentation_networks = tuple(
+            ipaddress.ip_network(cidr)
+            for cidr in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+        )
+
+        violations = []
+        for relative_path in markdown_paths:
+            document = repo_path(relative_path).read_text(encoding="utf-8")
+            for line_number, line in enumerate(document.splitlines(), start=1):
+                for candidate in ipv4_pattern.findall(line):
+                    try:
+                        address = ipaddress.ip_address(candidate)
+                    except ValueError:
+                        continue
+                    if address.is_global and not any(
+                        address in network for network in documentation_networks
+                    ):
+                        violations.append(
+                            f"{relative_path}:{line_number}: globally routable IPv4"
+                        )
+
+                if any(pattern.search(line) for pattern in concrete_identity_patterns):
+                    violations.append(
+                        f"{relative_path}:{line_number}: concrete SSH identity path"
+                    )
+                if any(pattern.search(line) for pattern in concrete_principal_patterns):
+                    violations.append(
+                        f"{relative_path}:{line_number}: concrete SSH principal"
+                    )
+
+                for assignment in assignment_pattern.finditer(line):
+                    value = assignment.group("value").rstrip(",;)")
+                    normalized = value.lower()
+                    if (
+                        value.startswith(("<", "$", "%"))
+                        or "example" in normalized
+                        or "localhost" in normalized
+                        or normalized.startswith("test-")
+                        or normalized.startswith("remote-")
+                    ):
+                        continue
+                    try:
+                        address = ipaddress.ip_address(value.strip("[]"))
+                    except ValueError:
+                        address = None
+                    if address is not None and (
+                        address.is_loopback
+                        or any(address in network for network in documentation_networks)
+                    ):
+                        continue
+                    violations.append(
+                        f"{relative_path}:{line_number}: concrete {assignment.group('key')} assignment"
+                    )
+
+        self.assertEqual([], violations, "\n".join(violations))
+
     def assert_chroma_admin_build_wiring(self, dockerfile, dockerignore):
         logical_dockerfile = re.sub(r"\\\r?\n[ \t]*", " ", dockerfile)
         instructions = {
