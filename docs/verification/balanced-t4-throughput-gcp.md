@@ -116,6 +116,25 @@ keep-alive `5m`. The post-call state remained `2/2` healthy and fully GPU-backed
 `5,266 MiB`, with zero restart, OOM, or exit errors. The temporary launcher and captured
 SSH child were stopped; final listener rows and captured owner processes were both zero.
 
+During the final verification pass, the data Spot VM was found terminated after its
+earlier accepted `16/16` state. The same existing VM restarted in `15.709 s`; no machine,
+disk, profile, service, or repository deployment changed. Its new ephemeral address was
+rediscovered only in memory. TCP 22 was reachable, and the initial strict SSH check
+correctly rejected the previously unseen address. After GCP control-plane identity was
+reconfirmed, one `accept-new` connection succeeded and an immediate strict-host-key
+connection also succeeded. No ignored target file was edited.
+
+The recovered guest then passed exact fresh checks: `16/16` expected containers,
+`16/16` running and healthy, zero starting or unhealthy services, zero running CPU
+Ollama containers, zero data-host inference listener rows, and full repository data
+profile health. No data-service redeployment was performed.
+
+An attempted redundant refresh of the already accepted final GPU audit then failed in
+the local PowerShell parser before any SSH or live command was invoked. It caused no
+remote request or mutation. The last completed GPU proof therefore remains the accepted
+rollback state recorded above: exact conservative settings, `2/2` healthy and fully
+GPU-backed, `5,266 MiB` compute use, and zero restart/OOM/Xid/nonzero-exit evidence.
+
 The conservative rollback release above is the final live release verified by this
 record. No persistent tunnel was created and no GitHub branch was pushed during this
 task.
