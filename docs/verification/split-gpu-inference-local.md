@@ -2,13 +2,18 @@
 
 ## Scope and environment
 
-- Evidence collected: `2026-08-08T09:13:35+05:30`
+- Authoritative session/control date: `2026-08-04`
+- Observed host-clock time: `2026-08-08T09:13:35+05:30`
 - Reviewed tree under test: `38217aca40f962455a317c03ed47a1f48c3af69a`
 - Docker Compose: `v5.3.1`
 - Python: `3.10.11`
 - PowerShell: `5.1.26100.8972`
 - Preserved, unstaged user edits: `config/ollama/bootstrap.sh` and
   `tests/test_ollama_bootstrap.py`
+
+The host clock was four calendar days ahead of the authoritative session/control date.
+The observed host-clock timestamp and evidence-commit metadata are retained as host-clock
+observations only; they are not used to establish event sequencing or evidence freshness.
 
 All commands were local-only. No tunnel or remote service was changed. All 15 canonical
 local ports were free before the aggregate, so no process required stopping or relaunching.
