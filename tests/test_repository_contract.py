@@ -31,13 +31,26 @@ class RepositoryContractTests(unittest.TestCase):
         )
         assignment_pattern = re.compile(
             r"(?i)\b(?P<key>REMOTE_(?:USER|HOST|IDENTITY_FILE)|"
-            r"SSH_(?:USER|PRINCIPAL|TARGET|IDENTITY_FILE))\s*=\s*"
+            r"SSH_(?:USER|PRINCIPAL|TARGET|IDENTITY_FILE)|"
+            r"SSH_(?:HOST_KEY_|PUBLIC_KEY_|IDENTITY_)?FINGERPRINT|"
+            r"REMOTE_SSH_(?:HOST_KEY_|PUBLIC_KEY_|IDENTITY_)?FINGERPRINT)"
+            r"[ \t]*=[ \t]*"
             r"[\"']?(?P<value>[^\s`\"']+)"
         )
         concrete_principal_patterns = (
-            re.compile(r"(?i)\bssh\s+(?:user|principal)\s+`(?!<)[^`]+`"),
+            re.compile(
+                r"(?i)\b(?:ssh\s+(?:user|principal)|"
+                r"(?:existing\s+)?guest principal)"
+                r"(?:[ \t]+(?:is|was))?[ \t]*(?:[:=][ \t]*)?"
+                r"(?:\r?\n[ \t]*)?`(?!<)[^`\r\n]+`"
+            ),
+            re.compile(r"(?i)\bssh\s+(?:user|principal)\s+(?!<)[^,.\s`]+"),
             re.compile(r"(?<![\w.-])(?!<)[\w.-]+:<public-key>"),
             re.compile(r"(?<![\w.-])(?!<)[\w.-]+@<public-ip>"),
+        )
+        fingerprint_pattern = re.compile(
+            r"(?i)(?<![A-Za-z0-9+/])SHA256:[A-Za-z0-9+/]{43}={0,2}"
+            r"(?![A-Za-z0-9+/=])"
         )
         documentation_networks = tuple(
             ipaddress.ip_network(cidr)
@@ -47,6 +60,12 @@ class RepositoryContractTests(unittest.TestCase):
         violations = []
         for relative_path in markdown_paths:
             document = repo_path(relative_path).read_text(encoding="utf-8")
+            for pattern in concrete_principal_patterns:
+                for match in pattern.finditer(document):
+                    line_number = document.count("\n", 0, match.start()) + 1
+                    violations.append(
+                        f"{relative_path}:{line_number}: concrete SSH principal"
+                    )
             for line_number, line in enumerate(document.splitlines(), start=1):
                 for candidate in ipv4_pattern.findall(line):
                     try:
@@ -64,9 +83,9 @@ class RepositoryContractTests(unittest.TestCase):
                     violations.append(
                         f"{relative_path}:{line_number}: concrete SSH identity path"
                     )
-                if any(pattern.search(line) for pattern in concrete_principal_patterns):
+                if fingerprint_pattern.search(line):
                     violations.append(
-                        f"{relative_path}:{line_number}: concrete SSH principal"
+                        f"{relative_path}:{line_number}: SSH key fingerprint"
                     )
 
                 for assignment in assignment_pattern.finditer(line):

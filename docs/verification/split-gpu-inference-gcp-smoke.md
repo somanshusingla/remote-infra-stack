@@ -11,6 +11,13 @@
 - GPU target: `nvidia-t4-26-gb-us-central-1`, zone `us-central1-f`,
   `n1-highmem-4`, Spot provisioning, termination action `Stop`.
 
+Publication-history note: the deployment and release identifiers below record the
+exact pre-publication trees exercised on the hosts. Before publication, only
+unpublished Markdown history was rewritten to redact infrastructure addresses and SSH
+identity metadata. Executable and configuration content was unchanged, so those
+identifiers were intentionally not substituted and may not resolve in the published
+history.
+
 All operator commands used a clean detached worktree at the reviewed commit. The
 primary feature worktree retained the user's unstaged edits in
 `config/ollama/bootstrap.sh` and `tests/test_ollama_bootstrap.py`; neither file was

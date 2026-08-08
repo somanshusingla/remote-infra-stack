@@ -10,6 +10,12 @@
 - Preserved, unstaged user edits: `config/ollama/bootstrap.sh` and
   `tests/test_ollama_bootstrap.py`.  No task files were left uncommitted.
 
+Publication-history note: the tree identifier above records the exact pre-publication
+tree that was exercised. Before publication, only unpublished Markdown history was
+rewritten to redact infrastructure addresses and SSH identity metadata. Executable and
+configuration content was unchanged, so the recorded identifier was intentionally not
+substituted and may not resolve in the published history.
+
 All commands below were run locally.  Output, environment-file values, remote
 targets, credentials, and model responses are intentionally omitted.
 

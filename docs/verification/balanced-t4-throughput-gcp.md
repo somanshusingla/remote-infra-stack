@@ -10,6 +10,12 @@
 - Final outcome: balanced throughput rejected; conservative rollback activated and
   verified.
 
+Publication-history note: the balanced and rollback identifiers above record the exact
+pre-publication trees exercised on the GPU host. Before publication, only unpublished
+Markdown history was rewritten to redact infrastructure addresses and SSH identity
+metadata. Executable and configuration content was unchanged, so those identifiers
+were intentionally not substituted and may not resolve in the published history.
+
 The host clock was four calendar days ahead of the authoritative session/control date.
 Host-clock timestamps and commit metadata are observations only; neither establishes
 event sequencing or evidence freshness.
